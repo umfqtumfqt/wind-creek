@@ -1,80 +1,63 @@
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
-import type { LucideIcon } from 'lucide-react-native';
-import { theme } from '../constants/theme';
-import { ICON_SIZE } from './GoldButton';
+import {StyleProp, StyleSheet, Text, View, ViewStyle} from 'react-native';
+import {THEME} from '../constants/theme';
 
-export type StatItem = {
-  key: string;
+type Props = {
   value: string;
   label: string;
-  valueColor: string;
+  valueColor?: string;
+  style?: StyleProp<ViewStyle>;
 };
 
-type Props = StatItem & { Icon: LucideIcon };
-
 /**
- * Pills in a row are intentionally identical in silhouette: one shared icon,
- * one size, one padding. Only the colour and the number differ.
- * The card itself uses width:'100%' — never flex:1 inside a flex:1 slot.
+ * Colour carries the semantics — no raster icon, so every card in a row is
+ * geometrically identical. width:'100%' and NOT flex:1: the parent slot is
+ * already flex:1, and nesting the two collapses the card to ~0 px tall.
  */
-function StatCard({ Icon, value, label, valueColor }: Props) {
-  return (
-    <View style={styles.card}>
-      <View
-        style={[
-          styles.iconWrap,
-          { backgroundColor: valueColor + '22', borderColor: valueColor + '55' },
-        ]}>
-        <Icon size={ICON_SIZE} color={valueColor} strokeWidth={2.4} />
-      </View>
-      <Text numberOfLines={1} style={[styles.value, { color: valueColor }]}>
-        {value}
-      </Text>
-      <Text numberOfLines={1} style={styles.label}>
-        {label}
-      </Text>
-    </View>
-  );
-}
+export const StatCard: React.FC<Props> = ({
+  value,
+  label,
+  valueColor = THEME.accent,
+  style,
+}) => (
+  <View style={[styles.card, {borderColor: valueColor + '55'}, style]}>
+    <View style={[styles.dot, {backgroundColor: valueColor}]} />
+    <Text style={[styles.value, {color: valueColor}]} numberOfLines={1}>
+      {value}
+    </Text>
+    <Text style={styles.label} numberOfLines={1}>
+      {label}
+    </Text>
+  </View>
+);
 
 const styles = StyleSheet.create({
   card: {
     width: '100%',
-    paddingVertical: 14,
-    paddingHorizontal: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.bg.raised,
+    backgroundColor: 'rgba(10,3,6,0.46)',
     borderWidth: 1,
-    borderColor: theme.colors.line.brass,
-    ...theme.shadow.card,
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    alignItems: 'center',
   },
-  iconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    marginBottom: 8,
+  dot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginBottom: 7,
   },
   value: {
-    fontSize: 17,
+    fontSize: 22,
     fontWeight: '800',
-    letterSpacing: 0.4,
-    lineHeight: 22,
-    fontVariant: ['tabular-nums'],
+    letterSpacing: 0.6,
+    fontVariant: ['tabular-nums' as const],
   },
   label: {
-    marginTop: 2,
-    fontSize: 9,
+    marginTop: 3,
+    fontSize: 10,
     fontWeight: '700',
-    letterSpacing: 1.4,
-    lineHeight: 12,
-    color: theme.colors.text.muted,
+    letterSpacing: 1.3,
+    color: THEME.textDim,
   },
 });
-
-export default React.memo(StatCard);

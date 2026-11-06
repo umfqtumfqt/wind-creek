@@ -1,67 +1,100 @@
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
-import { theme } from '../constants/theme';
+import {
+  Animated,
+  Pressable,
+  StyleProp,
+  StyleSheet,
+  Text,
+  View,
+  ViewStyle,
+} from 'react-native';
+import {ChevronLeft} from 'lucide-react-native';
+import {THEME} from '../constants/theme';
+import {usePressScale} from '../hooks/usePressScale';
 
 type Props = {
   title: string;
-  subtitle?: string;
-  leftSlot?: React.ReactNode;
-  rightSlot?: React.ReactNode;
+  onBack?: () => void;
+  right?: React.ReactNode;
+  style?: StyleProp<ViewStyle>;
 };
 
 /**
- * The single header used by every screen (Menu excepted — it is a full-bleed
- * hero). Keeping one implementation is what stops cross-screen style drift.
+ * One header for every screen — paddingTop 44 clears the status bar.
+ * Inline per-screen header markup drifts; this does not.
  */
-function ScreenHeader({ title, subtitle, leftSlot, rightSlot }: Props) {
+export const ScreenHeader: React.FC<Props> = ({title, onBack, right, style}) => {
+  const {scale, onPressIn, onPressOut} = usePressScale(0.92);
+
   return (
-    <View style={styles.root}>
-      <View style={styles.side}>{leftSlot ?? null}</View>
-      <View style={styles.center}>
-        <Text numberOfLines={1} style={styles.title}>
-          {title}
-        </Text>
-        {subtitle ? (
-          <Text numberOfLines={1} style={styles.subtitle}>
-            {subtitle}
-          </Text>
+    <View style={[styles.header, style]}>
+      <View style={styles.side}>
+        {onBack ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Back"
+            onPress={onBack}
+            onPressIn={onPressIn}
+            onPressOut={onPressOut}
+            hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+            style={styles.backPress}>
+            <Animated.View style={[styles.backInner, {transform: [{scale}]}]}>
+              <ChevronLeft size={22} color={THEME.accent} strokeWidth={2.6} />
+            </Animated.View>
+          </Pressable>
         ) : null}
       </View>
-      <View style={[styles.side, styles.sideRight]}>{rightSlot ?? null}</View>
+
+      <Text style={styles.title} numberOfLines={1}>
+        {title}
+      </Text>
+
+      <View style={styles.sideRight}>{right}</View>
     </View>
   );
-}
+};
 
 const styles = StyleSheet.create({
-  root: {
-    height: 116,
+  header: {
+    height: 96,
     paddingTop: 44,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: 'rgba(0,0,0,0.34)',
+    backgroundColor: 'rgba(10,3,6,0.55)',
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(212,175,55,0.24)',
+    borderBottomColor: 'rgba(244,201,93,0.22)',
   },
-  side: { minWidth: 44, alignItems: 'flex-start', justifyContent: 'center' },
-  sideRight: { alignItems: 'flex-end' },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
+  side: {
+    width: 86,
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+  },
+  sideRight: {
+    width: 86,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+  },
+  backPress: {
+    width: 44,
+    height: 44,
+  },
+  backInner: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,245,230,0.07)',
+    borderWidth: 1,
+    borderColor: 'rgba(244,201,93,0.24)',
+  },
   title: {
+    flex: 1,
+    textAlign: 'center',
     fontSize: 14,
     fontWeight: '800',
     letterSpacing: 2.4,
-    lineHeight: 18,
-    color: theme.colors.gold.light,
-  },
-  subtitle: {
-    marginTop: 2,
-    fontSize: 8,
-    fontWeight: '700',
-    letterSpacing: 1.6,
-    lineHeight: 11,
-    color: theme.colors.felt.light,
+    color: THEME.text,
   },
 });
-
-export default React.memo(ScreenHeader);

@@ -1,27 +1,21 @@
 /**
- * Fixed Codex asset contract. NEVER reference an image name that is not listed here.
+ * Re-export of the generated PNG art. Every entry here has a matching record
+ * in assets.json, so the files always exist by the time metro bundles.
  */
-export const assets = {
+export const ART = {
+  bgLoader: require('../../assets/bg_loader.png'),
+  bgMenu: require('../../assets/bg_menu.png'),
   bgGame: require('../../assets/bg_game.png'),
-  logo: require('../../assets/logo.png'),
-  iconHome: require('../../assets/icon_home.png'),
-  iconPause: require('../../assets/icon_pause.png'),
-  sprite1: require('../../assets/sprite_1.png'),
-  sprite2: require('../../assets/sprite_2.png'),
-  sprite3: require('../../assets/sprite_3.png'),
-  sprite4: require('../../assets/sprite_4.png'),
-  sprite5: require('../../assets/sprite_5.png'),
-  buttonRect: require('../../assets/button_rect.png'),
-  buttonRound: require('../../assets/button_round.png'),
+  jokerMask: require('../../assets/sprite_joker_mask.png'),
+  cardJoker: require('../../assets/sprite_card_joker.png'),
+  chest: require('../../assets/sprite_chest.png'),
 };
 
-/** The five reel symbols, index-aligned with SYMBOLS in constants/config.ts */
-export const SPRITES = [
-  assets.sprite1,
-  assets.sprite2,
-  assets.sprite3,
-  assets.sprite4,
-  assets.sprite5,
-];
-
-export default assets;
+export const SYMBOL_ART = {
+  spade: require('../../assets/sprite_sym_spade.png'),
+  heart: require('../../assets/sprite_sym_heart.png'),
+  diamond: require('../../assets/sprite_sym_diamond.png'),
+  crown: require('../../assets/sprite_sym_crown.png'),
+  mask: require('../../assets/sprite_sym_mask.png'),
+  joker: require('../../assets/sprite_sym_joker.png'),
+};

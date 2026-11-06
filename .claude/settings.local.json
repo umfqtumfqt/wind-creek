@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(adb:*)",
+      "Bash(npm:*)",
+      "Bash(npx:*)",
+      "Bash(node:*)",
+      "Bash(gradlew:*)",
+      "Bash(./gradlew:*)",
+      "Bash(cd:*)"
+    ]
+  }
+}

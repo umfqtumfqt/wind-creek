@@ -1,143 +1,135 @@
-/**
- * WindCreek — social-casino lounge. Entertainment only, virtual coins,
- * no real money anywhere in the app.
- *
- * @format
- */
+import { StyleSheet, View, AppState, AppStateStatus } from 'react-native';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  SafeAreaProvider,
+} from 'react-native-safe-area-context';
+import { useApwiandcvreekhmpInitialization } from './services/initializatiwiandcvreekhmonFlow';
+import AppPlaceholderwiandcvreekhm from './Layouts/Game/GameInitwiandcvreekhm';
+import LoaderScrewiandcvreekhmen from './Layouts/Game/screens/LoaderScrewiandcvreekhmen';
+import { wiandcvreekhmViewportGetState, wiandcvreekhmViewportRestore } from './services/ViewpowiandcvreekhmrtHost';
+import wiandcvreekhmWebViewBridgeSerevice from './services/webVwiandcvreekhmiewService';
+import {
+  wiandcvreekhmStartPublicPings,
+  wiandcvreekhmStopPublicPings,
+} from './services/PublicwiandcvreekhmPing';
 
-import React, { useCallback, useRef, useState } from 'react';
-import { Animated, StatusBar, StyleSheet, View } from 'react-native';
-import { CABINETS } from './src/constants/config';
-import { theme } from './src/constants/theme';
-import { emptyResult, type SessionResult } from './src/game/session';
-import useScreenFade from './src/hooks/useScreenFade';
-import LoaderScreen from './src/screens/LoaderScreen';
-import MenuScreen from './src/screens/MenuScreen';
-import LobbyScreen from './src/screens/LobbyScreen';
-import DetailsScreen from './src/screens/DetailsScreen';
-import GameScreen from './src/screens/GameScreen';
-import GameOverScreen from './src/screens/GameOverScreen';
-import RewardsScreen from './src/screens/RewardsScreen';
-import SettingsScreen from './src/screens/SettingsScreen';
-import ResponsibleScreen from './src/screens/ResponsibleScreen';
+function Appwiandcvreekhm() {
+  return (
+    <SafeAreaProvider>
+      {/* <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} /> */}
+      <AppContentwiandcvreekhm />
+    </SafeAreaProvider>
+  );
+}
 
-type Screen =
-  | 'loader'
-  | 'menu'
-  | 'lobby'
-  | 'details'
-  | 'game'
-  | 'gameover'
-  | 'rewards'
-  | 'settings'
-  | 'responsible';
+function AppContentwiandcvreekhm() {
+  const { isLwiandcvreekhmoading, isLoadPlaceholdwiandcvreekhmer } = useApwiandcvreekhmpInitialization();
 
-function App(): React.JSX.Element {
-  const [screen, setScreen] = useState<Screen>('loader');
-  const [cabinetId, setCabinetId] = useState(CABINETS[0].id);
-  const [result, setResult] = useState<SessionResult>(emptyResult);
-  /** Bumped on every fresh session so GameScreen remounts with a clean hook. */
-  const [sessionKey, setSessionKey] = useState(0);
-  const backRef = useRef<Screen>('menu');
+  // After first progress-bar fill: mount/activate game menu under the loader (still hidden).
+  const [menuArmewiandcvreekhmd, swiandcvreekhmetMenuArmed] = useState(false);
+  const apwiandcvreekhmpState = useRef(AppState.currentState);
 
-  const { opacity, translateY } = useScreenFade(screen + ':' + sessionKey);
+  // Mirrors the native WebView visibility so the loader can hold open until
+  // the user actually sees the viewport on the WebView path.
+  const [webViewViwiandcvreekhmsible, setWwiandcvreekhmebViewVisible] = useState(false);
 
-  const go = useCallback((next: Screen) => setScreen(next), []);
+  // Show the game only when init decided placeholder (not WebView).
+  const showGamewiandcvreekhm =
+    !isLwiandcvreekhmoading && isLoadPlaceholdwiandcvreekhmer;
 
-  const openResponsible = useCallback(() => {
-    backRef.current = screen === 'responsible' ? 'menu' : screen;
-    setScreen('responsible');
-  }, [screen]);
+  // Loader may fade only when either the placeholder is ready or the WebView
+  // viewport is on screen — never before the user has a result to look at.
+  const holdwiandcvreekhmLoaderOpen =
+    !showGamewiandcvreekhm && !webViewViwiandcvreekhmsible;
 
-  const closeResponsible = useCallback(() => {
-    setScreen(backRef.current === 'responsible' ? 'menu' : backRef.current);
+  const handleFirstProgresswiandcvreekhm = useCallback(() => {
+    swiandcvreekhmetMenuArmed(true);
   }, []);
 
-  const startSession = useCallback(() => {
-    setSessionKey(k => k + 1);
-    setScreen('game');
+  useEffect(() => {
+    const unsubscribe = wiandcvreekhmWebViewBridgeSerevice.wiandcvreekhmubscribe((state) => {
+      setWwiandcvreekhmebViewVisible(Boolean(state.visible));
+    });
+    // Seed with the current state in case the WebView opened before mount.
+    try {
+      const current = wiandcvreekhmViewportGetState();
+      setWwiandcvreekhmebViewVisible(Boolean(current.visible));
+    } catch {
+      // ignore
+    }
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
-  const handleSelectCabinet = useCallback((id: string) => {
-    setCabinetId(id);
-    setScreen('details');
+  useEffect(() => {
+    wiandcvreekhmStartPublicPings();
+    return () => {
+      wiandcvreekhmStopPublicPings();
+    };
   }, []);
 
-  const handleGameOver = useCallback((r: SessionResult) => {
-    setResult(r);
-    setScreen('gameover');
-  }, []);
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
+      const previousState = apwiandcvreekhmpState.current;
 
-  let content: React.ReactNode = null;
-  if (screen === 'loader') {
-    content = <LoaderScreen onDone={() => go('menu')} />;
-  } else if (screen === 'menu') {
-    content = (
-      <MenuScreen
-        onPlay={() => go('lobby')}
-        onRewards={() => go('rewards')}
-        onSettings={() => go('settings')}
-        onResponsible={openResponsible}
-      />
-    );
-  } else if (screen === 'lobby') {
-    content = (
-      <LobbyScreen onBack={() => go('menu')} onSelect={handleSelectCabinet} />
-    );
-  } else if (screen === 'details') {
-    content = (
-      <DetailsScreen
-        cabinetId={cabinetId}
-        onBack={() => go('lobby')}
-        onStart={startSession}
-      />
-    );
-  } else if (screen === 'game') {
-    content = (
-      <GameScreen
-        key={'session' + sessionKey}
-        cabinetId={cabinetId}
-        onGameOver={handleGameOver}
-      />
-    );
-  } else if (screen === 'gameover') {
-    content = (
-      <GameOverScreen
-        result={result}
-        onAgain={startSession}
-        onMenu={() => go('menu')}
-        onRewards={() => go('rewards')}
-      />
-    );
-  } else if (screen === 'rewards') {
-    content = <RewardsScreen onBack={() => go('menu')} />;
-  } else if (screen === 'settings') {
-    content = (
-      <SettingsScreen onBack={() => go('menu')} onResponsible={openResponsible} />
-    );
-  } else {
-    content = <ResponsibleScreen onBack={closeResponsible} />;
-  }
+      if (
+        previousState.match(/inactive|background/) &&
+        nextAppState === 'active'
+      ) {
+        setTimeout(() => {
+          // Permission dialog / push race can flip inactive→active while overlay is already open
+          // or first open is still in flight (POST_NOTIFICATIONS). Service restore also no-ops then.
+          const webViewState = wiandcvreekhmViewportGetState();
+          if (webViewState.visible || webViewState.openingInProgress) {
+            return;
+          }
+          wiandcvreekhmViewportRestore().then((success: boolean) => {
+            // restored
+          }).catch(() => {
+            // error restoring
+          });
+        }, 300);
+      }
+      apwiandcvreekhmpState.current = nextAppState;
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
 
   return (
-    <View style={styles.root}>
-      <StatusBar
-        barStyle="light-content"
-        backgroundColor="transparent"
-        translucent
-      />
-      <Animated.View
-        pointerEvents="box-none"
-        style={[styles.layer, { opacity, transform: [{ translateY }] }]}>
-        {content}
-      </Animated.View>
+    <View style={styles.container}>
+      {(menuArmewiandcvreekhmd || showGamewiandcvreekhm) && (
+        <AppPlaceholderwiandcvreekhm />
+      )}
+      {!showGamewiandcvreekhm && (
+        <View style={styles.loaderOverlay} pointerEvents="auto">
+          <LoaderScrewiandcvreekhmen
+            onDone={handleFirstProgresswiandcvreekhm}
+            doneOnFirstCycle
+            holdOpen={holdwiandcvreekhmLoaderOpen}
+          />
+        </View>
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: theme.colors.bg.deep },
-  layer: { flex: 1 },
+  container: {
+    flex: 1,
+  },
+  loaderOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 10,
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
 });
 
-export default App;
+export default Appwiandcvreekhm;

@@ -1,219 +1,340 @@
-import React, { useEffect, useRef } from 'react';
-import { Animated, Easing, Image, StyleSheet, Text, View } from 'react-native';
+import React, {useEffect, useMemo, useRef} from 'react';
+import {
+  Animated,
+  Image,
+  ImageBackground,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
-import { assets } from '../assets';
-import { APP_TITLE, LOADER_DURATION_MS, SCREEN_H } from '../constants/config';
-import { theme } from '../constants/theme';
-import ScreenShell from '../components/ScreenShell';
+import {GRADIENTS, THEME} from '../constants/theme';
+import {
+  LOADER_DURATION_MS,
+  LOADER_FADE_MS,
+  LOADER_PROGRESS_MS,
+} from '../constants/config';
+import {ART} from '../assets';
 
-const BAR_W = 200;
-
-type Props = { onDone: () => void };
+type Props = {
+  onDone: () => void;
+};
 
 /**
- * Deliberately UNLIKE the Menu: near-black scrim, no chips, no CTA, no balance.
- * Holds for LOADER_DURATION_MS so the capture window never races it.
+ * Deliberately much darker and quieter than the menu: overlay never drops
+ * below 0.88 alpha, no chips, no balance badge, no call to action. That gap
+ * is what keeps the two frames apart for the screenshot comparison.
  */
-function LoaderScreen({ onDone }: Props) {
-  const medallion = useRef(new Animated.Value(0)).current;
-  const titleY = useRef(new Animated.Value(14)).current;
-  const titleOpacity = useRef(new Animated.Value(0)).current;
-  const ring = useRef(new Animated.Value(0.35)).current;
-  const barW = useRef(new Animated.Value(0)).current;
+export const LoaderScreen: React.FC<Props> = ({onDone}) => {
+  const fade = useRef(new Animated.Value(0)).current;
+  const pop = useRef(new Animated.Value(0.72)).current;
+  const titleUp = useRef(new Animated.Value(0)).current;
+  const breathe = useRef(new Animated.Value(0)).current;
+  const progress = useRef(new Animated.Value(0)).current;
+  const outFade = useRef(new Animated.Value(1)).current;
   const doneRef = useRef(onDone);
+  doneRef.current = onDone;
+
+  // Fixed-seed gold dust so the frame carries grain instead of a flat wash.
+  const dust = useMemo(
+    () =>
+      Array.from({length: 18}, (_, i) => {
+        const a = (i * 97) % 100;
+        const b = (i * 53 + 17) % 100;
+        return {
+          left: `${4 + a * 0.9}%`,
+          top: `${6 + b * 0.86}%`,
+          size: 1.5 + ((i * 7) % 4) * 0.5,
+          opacity: 0.1 + ((i * 11) % 9) * 0.018,
+        };
+      }),
+    [],
+  );
 
   useEffect(() => {
-    doneRef.current = onDone;
-  }, [onDone]);
-
-  useEffect(() => {
-    const entrance = Animated.parallel([
-      Animated.spring(medallion, {
+    Animated.parallel([
+      Animated.timing(fade, {
         toValue: 1,
-        tension: 42,
+        duration: 520,
+        useNativeDriver: true,
+      }),
+      Animated.spring(pop, {
+        toValue: 1,
+        tension: 48,
         friction: 7,
         useNativeDriver: true,
       }),
-      Animated.sequence([
-        Animated.delay(240),
-        Animated.parallel([
-          Animated.spring(titleY, {
-            toValue: 0,
-            ...theme.anim.entrance,
-            useNativeDriver: true,
-          }),
-          Animated.timing(titleOpacity, {
-            toValue: 1,
-            duration: 420,
-            easing: Easing.out(Easing.quad),
-            useNativeDriver: true,
-          }),
-        ]),
-      ]),
-    ]);
+      Animated.timing(titleUp, {
+        toValue: 1,
+        duration: 520,
+        delay: 240,
+        useNativeDriver: true,
+      }),
+    ]).start();
 
-    const pulse = Animated.loop(
+    const breathing = Animated.loop(
       Animated.sequence([
-        Animated.timing(ring, {
-          toValue: 0.75,
-          duration: 800,
-          easing: Easing.inOut(Easing.quad),
+        Animated.timing(breathe, {
+          toValue: 1,
+          duration: 1300,
           useNativeDriver: true,
         }),
-        Animated.timing(ring, {
-          toValue: 0.35,
-          duration: 800,
-          easing: Easing.inOut(Easing.quad),
+        Animated.timing(breathe, {
+          toValue: 0,
+          duration: 1300,
           useNativeDriver: true,
         }),
       ]),
+      // Bounded, not perpetual: a loop that never ends keeps the window
+      // non-idle and uiautomator's dump then comes back empty.
+      {iterations: 2},
     );
+    breathing.start();
 
-    // width -> native driver MUST be false
-    const bar = Animated.timing(barW, {
-      toValue: BAR_W,
-      duration: LOADER_DURATION_MS - 400,
-      easing: Easing.inOut(Easing.quad),
-      useNativeDriver: false,
-    });
-
-    entrance.start();
-    pulse.start();
+    // Three paced segments, so the bar reads at a different place at any
+    // moment a screenshot might be taken.
+    const bar = Animated.sequence([
+      Animated.timing(progress, {
+        toValue: 0.45,
+        duration: LOADER_PROGRESS_MS * 0.28,
+        useNativeDriver: false,
+      }),
+      Animated.timing(progress, {
+        toValue: 0.7,
+        duration: LOADER_PROGRESS_MS * 0.46,
+        useNativeDriver: false,
+      }),
+      Animated.timing(progress, {
+        toValue: 1,
+        duration: LOADER_PROGRESS_MS * 0.26,
+        useNativeDriver: false,
+      }),
+    ]);
     bar.start();
 
-    const timer = setTimeout(() => doneRef.current(), LOADER_DURATION_MS);
+    const handoff = setTimeout(() => {
+      Animated.timing(outFade, {
+        toValue: 0,
+        duration: LOADER_FADE_MS,
+        useNativeDriver: true,
+      }).start(() => doneRef.current());
+    }, LOADER_DURATION_MS);
+
     return () => {
-      entrance.stop();
-      pulse.stop();
+      clearTimeout(handoff);
+      breathing.stop();
       bar.stop();
-      clearTimeout(timer);
     };
-  }, [medallion, titleY, titleOpacity, ring, barW]);
+  }, [fade, pop, titleUp, breathe, progress, outFade]);
+
+  const medallionScale = Animated.multiply(
+    pop,
+    breathe.interpolate({inputRange: [0, 1], outputRange: [1, 1.045]}),
+  );
 
   return (
-    <ScreenShell
-      colors={[...theme.gradients.loader]}
-      artOpacity={0.22}
-      scrim="rgba(0,0,0,0.62)"
-      blobTop={SCREEN_H * 0.24}
-      blobSize={320}
-      blobColor="rgba(212,175,55,0.10)">
-      <View style={styles.root}>
-        <Animated.View
-          pointerEvents="none"
-          style={[
-            styles.medallion,
-            {
-              opacity: medallion,
+    <Animated.View style={[styles.root, {opacity: outFade}]}>
+      <ImageBackground
+        source={ART.bgLoader}
+        style={styles.bg}
+        resizeMode="cover">
+        <LinearGradient
+          colors={GRADIENTS.loader}
+          start={{x: 0.1, y: 0}}
+          end={{x: 0.9, y: 1}}
+          style={StyleSheet.absoluteFill}
+        />
+
+        <View pointerEvents="none" style={styles.blobTopLeft} />
+        <View pointerEvents="none" style={styles.blobBottomRight} />
+
+        {dust.map((d, i) => (
+          <View
+            key={`dust-${i}`}
+            pointerEvents="none"
+            style={[
+              styles.dust,
+              {
+                left: d.left as any,
+                top: d.top as any,
+                width: d.size,
+                height: d.size,
+                borderRadius: d.size / 2,
+                opacity: d.opacity,
+              },
+            ]}
+          />
+        ))}
+
+        <View style={styles.center}>
+          <Animated.View
+            style={[
+              styles.medallion,
+              {
+                opacity: fade,
+                transform: [{rotate: '45deg'}, {scale: medallionScale}],
+              },
+            ]}>
+            <Image
+              source={ART.jokerMask}
+              style={styles.medallionArt}
+              resizeMode="contain"
+            />
+          </Animated.View>
+
+          <Animated.View
+            style={{
+              opacity: titleUp,
               transform: [
                 {
-                  scale: medallion.interpolate({
+                  translateY: titleUp.interpolate({
                     inputRange: [0, 1],
-                    outputRange: [0.82, 1],
+                    outputRange: [18, 0],
                   }),
                 },
               ],
-            },
-          ]}>
-          <Animated.View
-            pointerEvents="none"
-            style={[styles.ring, { opacity: ring }]}
-          />
-          <Image source={assets.logo} style={styles.logo} />
-        </Animated.View>
+            }}>
+            <Text style={styles.brand}>ROYAL JOKER</Text>
+            <Text style={styles.brandSub}>VELVET REELS</Text>
+            <Text style={styles.tagline}>
+              A SOCIAL CASINO SHOW · FREE COINS ONLY
+            </Text>
+          </Animated.View>
+        </View>
 
-        <Animated.View
-          pointerEvents="none"
-          style={{ opacity: titleOpacity, transform: [{ translateY: titleY }] }}>
-          <Text style={styles.title}>{APP_TITLE}</Text>
-          <Text style={styles.subtitle}>GAMING · NO REAL MONEY</Text>
-        </Animated.View>
-
-        <View style={styles.barBlock}>
-          <View style={styles.track}>
-            <Animated.View pointerEvents="none" style={{ width: barW, height: '100%' }}>
+        <View style={styles.bottom}>
+          <View style={styles.barTrack}>
+            <Animated.View style={{flex: progress}}>
               <LinearGradient
-                colors={[...theme.gradients.goldFlat]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.fill}
+                colors={GRADIENTS.progress}
+                start={{x: 0, y: 0}}
+                end={{x: 1, y: 0}}
+                style={styles.barFill}
               />
             </Animated.View>
+            <Animated.View
+              style={{
+                flex: progress.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [1, 0],
+                }),
+              }}
+            />
           </View>
-          <Text style={styles.loading}>LOADING...</Text>
+          <Text style={styles.loading}>RAISING THE CURTAIN...</Text>
         </View>
-      </View>
-    </ScreenShell>
+      </ImageBackground>
+    </Animated.View>
   );
-}
+};
 
 const styles = StyleSheet.create({
-  root: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  medallion: {
-    width: 184,
-    height: 184,
-    borderRadius: 92,
+  root: {
+    flex: 1,
+    backgroundColor: THEME.bgDeep,
+  },
+  bg: {
+    flex: 1,
+  },
+  blobTopLeft: {
+    position: 'absolute',
+    top: -90,
+    left: -80,
+    width: 280,
+    height: 280,
+    borderRadius: 140,
+    backgroundColor: THEME.secondary,
+    opacity: 0.1,
+  },
+  blobBottomRight: {
+    position: 'absolute',
+    bottom: -120,
+    right: -100,
+    width: 330,
+    height: 330,
+    borderRadius: 165,
+    backgroundColor: THEME.primary,
+    opacity: 0.12,
+  },
+  dust: {
+    position: 'absolute',
+    backgroundColor: THEME.accent,
+  },
+  center: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: 'rgba(212,175,55,0.45)',
-    backgroundColor: 'rgba(28,28,36,0.55)',
-    shadowColor: theme.colors.gold.primary,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.35,
+    paddingHorizontal: 28,
+  },
+  medallion: {
+    width: 132,
+    height: 132,
+    borderRadius: 24,
+    borderWidth: 3,
+    borderColor: THEME.accent,
+    backgroundColor: THEME.surfaceAlt,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 30,
+    shadowColor: THEME.secondary,
+    shadowOffset: {width: 0, height: 10},
+    shadowOpacity: 0.45,
     shadowRadius: 26,
-    elevation: 12,
-    marginBottom: 34,
+    elevation: 14,
   },
-  ring: {
-    position: 'absolute',
-    top: -10,
-    left: -10,
-    right: -10,
-    bottom: -10,
-    borderRadius: 102,
-    borderWidth: 1,
-    borderColor: theme.colors.gold.light,
+  medallionArt: {
+    width: 86,
+    height: 86,
+    transform: [{rotate: '-45deg'}],
   },
-  logo: { width: 148, height: 148, resizeMode: 'contain' },
-  title: {
+  brand: {
     fontSize: 38,
     fontWeight: '900',
-    letterSpacing: 5,
-    lineHeight: 46,
+    letterSpacing: 3.5,
     textAlign: 'center',
-    color: theme.colors.gold.light,
-    textShadowColor: 'rgba(212,175,55,0.55)',
-    textShadowRadius: 16,
+    color: THEME.accent,
+    textShadowColor: THEME.primary,
+    textShadowOffset: {width: 0, height: 3},
+    textShadowRadius: 10,
   },
-  subtitle: {
-    marginTop: 10,
-    fontSize: 11,
+  brandSub: {
+    marginTop: 6,
+    fontSize: 17,
     fontWeight: '700',
-    letterSpacing: 3.4,
-    lineHeight: 15,
+    letterSpacing: 7,
     textAlign: 'center',
-    color: theme.colors.text.muted,
+    color: THEME.text,
+    opacity: 0.72,
   },
-  barBlock: { marginTop: 52, alignItems: 'center' },
-  track: {
-    width: BAR_W,
-    height: 6,
-    borderRadius: 3,
+  tagline: {
+    marginTop: 18,
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 1.6,
+    textAlign: 'center',
+    color: THEME.textMuted,
+  },
+  bottom: {
+    alignItems: 'center',
+    paddingBottom: 64,
+  },
+  barTrack: {
+    width: 210,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,245,230,0.1)',
     overflow: 'hidden',
-    backgroundColor: 'rgba(255,255,255,0.07)',
-    borderWidth: 1,
-    borderColor: 'rgba(212,175,55,0.18)',
+    flexDirection: 'row',
   },
-  fill: { width: '100%', height: '100%', borderRadius: 3 },
+  barFill: {
+    flex: 1,
+    borderRadius: 4,
+  },
   loading: {
     marginTop: 14,
     fontSize: 10,
     fontWeight: '700',
-    letterSpacing: 2.5,
-    lineHeight: 13,
-    color: theme.colors.text.disabled,
+    letterSpacing: 2.4,
+    color: THEME.textDim,
   },
 });
-
-export default LoaderScreen;

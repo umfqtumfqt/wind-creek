@@ -1,89 +1,113 @@
-import React, { useEffect, useRef } from 'react';
-import { Animated, Easing, Image, StyleSheet, View } from 'react-native';
-import { SPRITES } from '../assets';
-import { ROWS, STRIP_LEN, TILE } from '../constants/config';
-import { theme } from '../constants/theme';
-
-/** The reel always comes to rest here: the last ROWS cells of the strip. */
-export const SETTLED_OFFSET = -(STRIP_LEN - ROWS) * TILE;
+import React, {useMemo} from 'react';
+import {Animated, StyleSheet, View} from 'react-native';
+import LinearGradient from 'react-native-linear-gradient';
+import {STRIP_COPIES, STRIP_LEN, VISIBLE_ROWS} from '../constants/config';
+import {SymbolDef} from '../game/symbols';
+import {THEME} from '../constants/theme';
+import {SymbolTile} from './SymbolTile';
 
 type Props = {
-  strip: number[];
-  /** Bumped by the hook on every spin; drives the animation. */
-  spinId: number;
-  duration: number;
-  onEnd?: () => void;
+  strip: SymbolDef[];
+  /** Cell edge == reel width, so symbols stay square. */
+  cell: number;
+  /** Counts cells travelled; wrapped by Animated.modulo for a seamless loop. */
+  driver: Animated.Value;
+  winRows: boolean[];
+  celebrate: boolean;
 };
 
-function Reel({ strip, spinId, duration, onEnd }: Props) {
-  const translateY = useRef(new Animated.Value(SETTLED_OFFSET)).current;
-  const onEndRef = useRef(onEnd);
-
-  useEffect(() => {
-    onEndRef.current = onEnd;
-  }, [onEnd]);
-
-  useEffect(() => {
-    if (spinId === 0) {
-      return;
-    }
-    translateY.setValue(0);
-    const anim = Animated.timing(translateY, {
-      toValue: SETTLED_OFFSET,
-      duration,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    });
-    anim.start(({ finished }) => {
-      if (finished && onEndRef.current) {
-        onEndRef.current();
+/**
+ * A vertical strip clipped to a 3-row window. The column holds two copies of
+ * the strip, and translateY is the driver taken modulo the strip length, so
+ * the reel can spin forever without ever running off the end of the column.
+ */
+export const Reel: React.FC<Props> = ({
+  strip,
+  cell,
+  driver,
+  winRows,
+  celebrate,
+}) => {
+  const cells = useMemo(() => {
+    const out: SymbolDef[] = [];
+    for (let copy = 0; copy < STRIP_COPIES; copy++) {
+      for (let i = 0; i < strip.length; i++) {
+        out.push(strip[i]);
       }
-    });
-    return () => anim.stop();
-  }, [spinId, duration, translateY]);
+    }
+    return out;
+  }, [strip]);
+
+  const translateY = useMemo(
+    () =>
+      Animated.modulo(driver, STRIP_LEN).interpolate({
+        inputRange: [0, STRIP_LEN],
+        outputRange: [0, -STRIP_LEN * cell],
+      }),
+    [driver, cell],
+  );
+
+  const height = cell * VISIBLE_ROWS;
 
   return (
-    <View style={styles.window}>
+    <View style={[styles.window, {width: cell, height}]}>
       <Animated.View
         pointerEvents="none"
-        style={{ transform: [{ translateY }] }}>
-        {strip.map((symbol, i) => (
-          <View key={'c' + i} style={styles.cell}>
-            <Image source={SPRITES[symbol]} style={styles.sprite} />
-            <View style={styles.divider} />
-          </View>
+        style={{transform: [{translateY}]}}>
+        {cells.map((sym, i) => (
+          <SymbolTile key={`${sym.key}-${i}`} symbol={sym} cell={cell} />
         ))}
       </Animated.View>
+
+      {/* Inner shadow illusion: the well is lit from the front edges only. */}
+      <LinearGradient
+        colors={['rgba(0,0,0,0.5)', 'rgba(0,0,0,0)']}
+        start={{x: 0, y: 0}}
+        end={{x: 0, y: 1}}
+        pointerEvents="none"
+        style={[styles.shade, {top: 0, height: 12}]}
+      />
+      <LinearGradient
+        colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.5)']}
+        start={{x: 0, y: 0}}
+        end={{x: 0, y: 1}}
+        pointerEvents="none"
+        style={[styles.shade, {bottom: 0, height: 12}]}
+      />
+
+      {winRows.map((isWin, row) =>
+        isWin && celebrate ? (
+          <View
+            key={`win-${row}`}
+            pointerEvents="none"
+            style={[
+              styles.ring,
+              {top: row * cell + 3, height: cell - 6, width: cell - 6},
+            ]}
+          />
+        ) : null,
+      )}
     </View>
   );
-}
+};
 
 const styles = StyleSheet.create({
   window: {
-    width: TILE,
-    height: TILE * ROWS,
     overflow: 'hidden',
+    borderRadius: 14,
+    backgroundColor: '#1A060C',
   },
-  cell: {
-    width: TILE,
-    height: TILE,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#16161C',
-  },
-  sprite: {
-    width: TILE - 20,
-    height: TILE - 20,
-    resizeMode: 'contain',
-  },
-  divider: {
+  shade: {
     position: 'absolute',
     left: 0,
     right: 0,
-    bottom: 0,
-    height: 1,
-    backgroundColor: theme.colors.line.brass,
+  },
+  ring: {
+    position: 'absolute',
+    left: 3,
+    borderRadius: 12,
+    borderWidth: 3,
+    borderColor: THEME.accent,
+    backgroundColor: 'rgba(109,40,217,0.18)',
   },
 });
-
-export default React.memo(Reel);
