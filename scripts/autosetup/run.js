@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 /**
- * Hybrid autosetup (вариант A):
- *  - этот скрипт: Jira (поля + вложения + Worker URL из комментариев) + meta apply
- *    + fragment / rotate / decoy + path check + npm install
+ * Autosetup (AES-256-GCM flow):
+ *  - Jira: поля + вложения + Worker URL из комментариев
+ *  - applyMeta: appName / packageName / version + LINK_HEX в Rumokuroh.java
+ *  - applyAssets: keystore / google-services / game bundles
+ *  - rotateEncryption: новый PASSWORD + SALT в native + worker, LINK_HEX перешифровка
+ *  - path-check, clean-android, npm install, finishExtras (loader/helpers/git/github/fb)
  *
  * Usage:
  *   node scripts/autosetup/run.js
@@ -16,7 +19,6 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const { detectProjectEncryptionMode } = require("./detectEncryption");
-const { suggestFragment } = require("./fragment");
 const { resolveTaskData } = require("./resolveTaskData");
 const {
   syncMetaFromJira,
@@ -30,26 +32,18 @@ const {
   applyGame,
 } = require("./applyAssets");
 const { checkProjectPaths } = require("./checkPaths");
-const { repairObfDrift } = require("./repairObfDrift");
 const { rmrf, safeStat } = require("./fsUtils");
 const {
   applyMetaFields,
   applyCloudflareWorkerLink,
   detectFragmentFromConstants,
 } = require("./applyMeta");
-const { replaceFragmentInProject } = require("./replaceFragment");
-const { applyHostFragment } = require("./applyHostFragment");
 const { rotateProjectEncryption } = require("./rotateEncryption");
-const { generateProjectDecoys } = require("./generateDecoys");
-const { stampDexVariance } = require("./stampDexVariance");
-const { stampGameFragment } = require("./stampGameFragment");
-const { applyColossus } = require("./applyColossus");
-const { stampCfProtocol } = require("./stampCfProtocol");
-const { reshuffleFragmentPositions } = require("./reshuffleFragment");
-const { stampModuleRegistry } = require("./stampModuleRegistry");
-const { renameNativeSurface } = require("./renameNativeSurface");
-const { touchAllFiles } = require("./touchAllFiles");
-const { relocateNativePackage } = require("./relocateNativePackage");
+const { rotateCfProtocol } = require("./rotateCfProtocol");
+const { renameModules } = require("./renameModules");
+const { padMethods } = require("./padMethods");
+const { checkNativeV2 } = require("./checkNative");
+const { repairImports } = require("./repairImports");
 const { runFinishExtras, TAIL_STEPS } = require("./finishExtras");
 
 const PARTIAL_STEPS = new Set([
@@ -57,27 +51,20 @@ const PARTIAL_STEPS = new Set([
   "keystore",
   "google-services",
   "game",
+  "repair-imports",
   "paths",
-  "fragment",
-  "game-stamp",
+  "native-check",
+  "cf-protocol",
+  "rename-modules",
+  "pad-methods",
   "rotate",
-  "colossus",
-  "protocol",
-  "reshuffle",
-  "touch",
-  "decoy",
-  "dex",
-  "native-surface",
   "npm",
   "clean-android",
   "checklist",
-  "loader",
-  "helpers",
   "description",
   "git-remote",
   "github-aab",
   "fb-jira",
-  "repair",
 ]);
 
 function parseArgs(argv) {
@@ -135,34 +122,36 @@ Options:
   --meta <path>       Path to meta.json (default: <project>/meta.json)
   --only <steps>      Частичный запуск, через запятую:
                       meta, keystore, google-services, game, paths,
-                      fragment, game-stamp, rotate, colossus, protocol,
-                      reshuffle, touch, decoy, dex, native-surface, npm, clean-android, checklist,
-                      loader, helpers, description, git-remote, github-aab, fb-jira, repair
+                      native-check, cf-protocol, rotate,
+                      npm, clean-android, checklist,
+                      description, git-remote, github-aab, fb-jira
   --assets-only       keystore+google-services+game+paths
   --skip-assets       Пропустить keystore/google-services/game
   --checklist-only    Только итог / summary
   --skip-npm          Не делать npm install в полном прогоне
-  --skip-tail         Не запускать хвост: loader, helpers+repair, описание в Jira,
-                      .git из GitHub, GitHub AAB, FB hash / Class Name,
-                      и хэндофф repair-imports в Claude Code
+  --skip-tail         Не запускать хвост: path-check, описание в Jira,
+                      .git из GitHub, GitHub AAB, FB hash / Class Name
   --list              То же, что npm run cmds
 
 meta.json (Jira):
   jiraBaseUrl, jiraEmail, jiraToken, jiraIssue
   → appName / packageName + keystore / google-services / *_source.zip
-  → комментарии задачи: Worker URL → li{fragment}nk (шифруется текущим cipher)
-  → после game: штамп fragment в Layouts/Game (имена + код), иначе fragment/split там пустые
-  → после fragment: namespace и пакет Main* → com.{hostFragment} (старый суффикс abpp снимается)
-    (уникален на jiraIssue+packageName; иначе клоны шаблона делят один Class Name)
-  → ModuleRegistry без фрагмента переименовывается в S{fragment}ModuleRegistry,
-    дальше его двигают fragment replace и reshuffle
-  → NativeModule (класс, getName, @ReactMethod и вызовы в services/) получают
-    новые имена на каждом прогоне; R8 их не прячет
+  → комментарии задачи: Cloudflare Worker URL → LINK_HEX в Rumokuroh.java
+    (шифруется AES-256-GCM тем же ключом, что держит native + worker)
+  → rotate: PASSWORD + SALT переписываются в Rumokuroh.java, Qelujowofahuhe.kt
+    и cloudflare-worker/index.js; LINK_HEX перешифровывается под новый ключ
+  → game: @app-slot:game бандлы в Layouts/Game пересобираются из source zip,
+    инфраструктурные @app-slot:service файлы и GameInit.tsx остаются как есть
+  → cf-protocol: cookieName / headerName / path / bodyField / extraQuery /
+    dummyBodyKeys рандомизируются на проект и пишутся в worker + native +
+    обратно в meta.json (meta.cfProtocol = "auto" → перегенерить)
+  → native-check: валидирует v2 native (BwCodec.kt, gemefuxolaru/jopuwikemavo
+    в Qelujowofahuhe.kt, cf-intake:v2 маркер в Desujiwelopozi.kt)
 
 Примеры:
   node scripts/autosetup/run.js --only keystore,game
-  node scripts/autosetup/run.js --only game-stamp,decoy
-  node scripts/autosetup/run.js --only fragment,rotate
+  node scripts/autosetup/run.js --only rotate
+  node scripts/autosetup/run.js --only meta,paths
   npm run cmds
 `);
 }
@@ -183,29 +172,15 @@ async function saveMeta(metaPath, meta) {
   await fs.writeFile(metaPath, `${JSON.stringify(toSave, null, 2)}\n`, "utf8");
 }
 
-function needsAutoEncryption(value) {
-  if (value == null) return true;
-  const v = String(value).trim().toLowerCase();
-  return v === "" || v === "auto" || v === "detect";
-}
-
 function needsAutoFragment(value) {
   if (value == null) return true;
   const v = String(value).trim().toLowerCase();
   return v === "" || v === "auto" || v === "null" || v === "detect";
 }
 
-async function resolveEncryption(rootPath, meta) {
-  if (!needsAutoEncryption(meta.encryption)) {
-    return { mode: String(meta.encryption).trim().toLowerCase(), auto: false };
-  }
-  const detected = await detectProjectEncryptionMode(rootPath);
-  if (!detected) {
-    throw new Error(
-      "Не удалось автоопределить encryption (нет import ./typex|./ty*pex|./xtea|./xt*ea|./fernet|./rc4|./rc6|./gost|./blowfish|./tripledes|./ascon|./rot47 в services/*toService.ts / *Crypto*Service.ts)"
-    );
-  }
-  return { mode: detected, auto: true };
+async function resolveEncryption(rootPath, _meta) {
+  const mode = await detectProjectEncryptionMode(rootPath);
+  return { mode, auto: true };
 }
 
 /** In-memory only — does not change meta.encryption on disk. */
@@ -231,8 +206,6 @@ function printDoneSummary(meta, { rootPath, encryptionMode, warnings = [] }) {
   console.log(`appName: ${meta.appName}`);
   console.log(`packageName: ${meta.packageName}`);
   console.log(`version: ${meta.versionCode} / ${meta.versionName}`);
-  console.log(`fragmentTo: ${meta.fragmentTo}`);
-  console.log(`hostFragment: ${meta.hostFragment || "(n/a)"}`);
   console.log(`project: ${rootPath}`);
   printWarningReport(warnings);
   console.log("=======================================\n");
@@ -280,7 +253,7 @@ async function runNpmInstall(rootPath) {
 async function prepareMeta(
   rootPath,
   metaPath,
-  { requireMetaFields, allowSuggestFragment = true } = {}
+  { requireMetaFields } = {}
 ) {
   const meta = await loadMeta(metaPath);
   if (requireMetaFields) {
@@ -294,28 +267,13 @@ async function prepareMeta(
 
   const enc = await resolveEncryption(rootPath, meta);
   applyEncryptionToMeta(meta, enc);
-  if (enc.auto) {
-    console.log(
-      `[autosetup] encryption auto-detected → ${enc.mode} (не пишем в meta.json)`
-    );
-  } else {
-    console.log(`[autosetup] encryption from meta → ${enc.mode}`);
-  }
+  console.log(`[autosetup] encryption → ${enc.mode}`);
 
   if (needsAutoFragment(meta.fragmentTo)) {
-    // Only invent a new fragment when the fragment step will actually rename.
-    // rotate/decoy alone must keep the live constants fragment.
-    if (allowSuggestFragment !== false) {
-      meta.fragmentTo = suggestFragment(rootPath);
-      console.log(
-        `[autosetup] fragmentTo suggested → ${meta.fragmentTo} (не пишем в meta.json)`
-      );
-    } else {
-      meta.fragmentTo = await detectFragmentFromConstants(rootPath);
-      console.log(
-        `[autosetup] fragmentTo from project → ${meta.fragmentTo || "(empty)"}`
-      );
-    }
+    meta.fragmentTo = await detectFragmentFromConstants(rootPath);
+    console.log(
+      `[autosetup] fragmentTo from project → ${meta.fragmentTo || "(empty)"}`
+    );
   } else {
     console.log(`[autosetup] fragmentTo from meta → ${meta.fragmentTo}`);
   }
@@ -374,20 +332,11 @@ async function main() {
   let doGs = only ? only.has("google-services") : true;
   let doGame = only ? only.has("game") : true;
   const doPaths = only ? only.has("paths") : true;
-  const doFragment = only ? only.has("fragment") : !args.assetsOnly;
-  const doGameStamp = only
-    ? only.has("game-stamp") || only.has("fragment") || only.has("game") || only.has("decoy")
-    : !args.assetsOnly || doGame;
+  const doNativeCheck = only ? only.has("native-check") : true;
+  const doCfProtocol = only ? only.has("cf-protocol") : !args.assetsOnly;
+  const doRenameModules = only ? only.has("rename-modules") : !args.assetsOnly;
+  const doPadMethods = only ? only.has("pad-methods") : !args.assetsOnly;
   const doRotate = only ? only.has("rotate") : !args.assetsOnly;
-  const doColossus = only ? only.has("colossus") : !args.assetsOnly;
-  const doProtocol = only ? only.has("protocol") : !args.assetsOnly;
-  const doReshuffle = only ? only.has("reshuffle") || only.has("fragment") : !args.assetsOnly;
-  const doTouch = only ? only.has("touch") : !args.assetsOnly;
-  const doDecoy = only ? only.has("decoy") : !args.assetsOnly;
-  const doDex = only ? only.has("dex") || only.has("decoy") : !args.assetsOnly;
-  const doNativeSurface = only
-    ? only.has("native-surface") || only.has("dex") || only.has("decoy") || only.has("fragment")
-    : !args.assetsOnly;
   const doClean = only ? only.has("clean-android") : !args.assetsOnly;
   const doNpm = only
     ? only.has("npm")
@@ -421,7 +370,7 @@ async function main() {
 
     const needAssets = doKeystore || doGs || doGame;
     const needJiraFields =
-      doMeta || needAssets || doSummary || doFragment || (!only && true);
+      doMeta || needAssets || doSummary || (!only && true);
 
     let meta = await loadMeta(metaPath).catch(() => ({}));
     let enc = null;
@@ -432,23 +381,11 @@ async function main() {
     }
 
     const needPrepare =
-      doMeta ||
-      doKeystore ||
-      doGs ||
-      doGame ||
-      doGameStamp ||
-      doFragment ||
-      doRotate ||
-      doColossus ||
-      doProtocol ||
-      doReshuffle ||
-      doDecoy ||
-      doSummary;
+      doMeta || doKeystore || doGs || doGame || doRotate || doSummary;
 
     if (needPrepare) {
       const prepared = await prepareMeta(rootPath, metaPath, {
-        requireMetaFields: doMeta || doFragment || doSummary || !only,
-        allowSuggestFragment: doFragment || (!only && !args.assetsOnly),
+        requireMetaFields: doMeta || doSummary || !only,
       });
       meta = prepared.meta;
       enc = prepared.enc;
@@ -475,7 +412,6 @@ async function main() {
       }
       const metaResults = await applyMetaFields(rootPath, meta, {
         cloudflareWorkerUrl,
-        encryptionMode: enc?.mode || meta.encryptionResolved || meta.encryption,
       });
       for (const [name, result] of metaResults) {
         console.log(`  - ${name}: ${result.details}${result.ok ? "" : " (warn)"}`);
@@ -506,17 +442,10 @@ async function main() {
       console.log(result.details || "ok");
     }
 
-    if (doGameStamp) {
-      const stampFrag =
-        (await detectFragmentFromConstants(rootPath)) ||
-        meta.fragmentTo ||
-        "";
-      process.stdout.write("[autosetup] game-stamp (Layouts/Game)... ");
-      const stamp = await stampGameFragment(rootPath, { fragment: stampFrag });
-      console.log(stamp.details || "ok");
-      if (!stamp.ok) {
-        throw new Error(stamp.details);
-      }
+    if (doGame) {
+      process.stdout.write("[autosetup] repair-imports... ");
+      const repairResult = await repairImports({ projectRoot: rootPath });
+      console.log(repairResult.details || "ok");
     }
 
     let check = { ok: true, checkedFiles: 0, problems: [] };
@@ -533,181 +462,91 @@ async function main() {
       }
     }
 
-    if (doFragment) {
-      const fromFragment = await detectFragmentFromConstants(rootPath);
-      const toFragment = meta.fragmentTo;
-      process.stdout.write(
-        `[autosetup] fragment ${fromFragment || "?"} → ${toFragment}... `
-      );
-      const result = await replaceFragmentInProject(rootPath, fromFragment, toFragment);
-      console.log(result.details || "ok");
-      if (!result.ok) {
-        throw new Error(result.details);
-      }
-
-      const projectFragment =
-        (await detectFragmentFromConstants(rootPath)) || toFragment;
-      process.stdout.write("[autosetup] activity host... ");
-      const hostResult = await applyHostFragment(rootPath, meta, projectFragment);
-      console.log(hostResult.details || "ok");
-      if (!hostResult.ok) {
-        throw new Error(hostResult.details);
-      }
-      process.stdout.write("[autosetup] native package... ");
-      const nativePkg = await relocateNativePackage(
-        rootPath,
-        projectFragment,
-        `com.${meta.hostFragment}`
-      );
-      console.log(nativePkg.details || "ok");
-      await saveMeta(metaPath, meta);
-    }
-
-    if (doReshuffle) {
-      const fragment =
-        meta.fragmentTo || (await detectFragmentFromConstants(rootPath));
-      process.stdout.write("[autosetup] module registry... ");
-      const registry = await stampModuleRegistry(rootPath, { fragment });
-      console.log(registry.details || "ok");
-      if (!registry.ok) {
-        throw new Error(registry.details);
-      }
-      process.stdout.write("[autosetup] reshuffle fragment positions... ");
-      const result = await reshuffleFragmentPositions(rootPath, fragment);
-      console.log(result.details || "ok");
-      if (!result.ok) {
-        throw new Error(result.details);
+    let nativeCheck = { ok: true, problems: [] };
+    if (doNativeCheck) {
+      process.stdout.write("[autosetup] native-v2-check... ");
+      nativeCheck = await checkNativeV2(rootPath);
+      if (nativeCheck.ok) {
+        console.log("ok");
+      } else {
+        console.log(`FOUND ${nativeCheck.problems.length} issue(s):`);
+        for (const p of nativeCheck.problems) {
+          console.log(`  - ${p}`);
+        }
       }
     }
 
-    if (doColossus) {
-      const fragment =
-        meta.fragmentTo || (await detectFragmentFromConstants(rootPath));
-      process.stdout.write("[autosetup] colossus cipher + seed... ");
-      const result = await applyColossus(rootPath, { fragment, meta });
+    if (doCfProtocol) {
+      process.stdout.write("[autosetup] cf-protocol (wire surface)... ");
+      const result = await rotateCfProtocol({ projectRoot: rootPath, meta });
+      console.log(result.ok ? (result.regenerated ? "сгенерирован новый" : "применён из meta") : "FAIL");
+      if (result.details) {
+        for (const line of String(result.details).split("\n")) {
+          console.log(`  ${line}`);
+        }
+      }
+      if (!result.ok) {
+        throw new Error(result.details || "cf-protocol failed");
+      }
+      // Persist the resolved values back to meta.json if newly generated,
+      // so future autosetup runs are deterministic (no accidental re-rolls).
+      if (result.regenerated && result.surface) {
+        meta.cfProtocol = result.surface;
+        await saveMeta(metaPath, meta);
+        console.log("  meta.cfProtocol сохранён в meta.json");
+      }
+    }
+
+    if (doRenameModules) {
+      process.stdout.write("[autosetup] rename-modules... ");
+      const result = await renameModules({ projectRoot: rootPath });
+      console.log(result.ok ? "ok" : "FAIL");
+      if (result.details) {
+        for (const line of String(result.details).split("\n")) {
+          console.log(`  ${line}`);
+        }
+      }
+      if (!result.ok) {
+        throw new Error(result.details || "rename-modules failed");
+      }
+    }
+
+    if (doPadMethods) {
+      process.stdout.write("[autosetup] pad-methods... ");
+      const result = await padMethods({ projectRoot: rootPath });
+      console.log(result.ok ? "ok" : "FAIL");
+      if (result.details) {
+        for (const line of String(result.details).split("\n")) {
+          console.log(`  ${line}`);
+        }
+      }
+      if (!result.ok) {
+        throw new Error(result.details || "pad-methods failed");
+      }
+    }
+
+    if (doRotate) {
+      process.stdout.write("[autosetup] rotate encryption (AES-256-GCM)... ");
+      const result = await rotateProjectEncryption({ projectRoot: rootPath });
       console.log(result.details || "ok");
       if (!result.ok) {
         throw new Error(result.details);
       }
-      enc = { mode: "colossus", auto: false };
-      meta.encryption = "colossus";
-      meta.encryptionResolved = "colossus";
-      await saveMeta(metaPath, meta);
 
-      // Seed just rotated. The li*nk hex was encrypted with the previous key
-      // (and fragment replace can change that key), so rewrite it from Jira
-      // under the credentials now on disk — before rotate tries to decrypt it.
+      // Rotation changed the key — re-encrypt the CF URL (if we have it in
+      // Jira) under the new key so the worker and native stay in sync.
       if (isJiraConfigured(meta)) {
-        process.stdout.write("[autosetup] worker url (new colossus seed)... ");
+        process.stdout.write("[autosetup] worker url (re-encrypt)... ");
         const worker = await fetchJiraCloudflareWorkerUrl(meta);
         if (!worker.ok) {
           console.warn(worker.details || "не найден");
         } else {
-          const liveFragment = await detectFragmentFromConstants(rootPath);
-          const relink = await applyCloudflareWorkerLink(
-            rootPath,
-            worker.url,
-            liveFragment,
-            "colossus",
-            meta
-          );
+          const relink = await applyCloudflareWorkerLink(rootPath, worker.url);
           console.log(relink.details || "ok");
           if (!relink.ok) {
             throw new Error(relink.details);
           }
         }
-      }
-    }
-
-    if (doProtocol) {
-      const fragment =
-        meta.fragmentTo || (await detectFragmentFromConstants(rootPath));
-      process.stdout.write("[autosetup] cloudflare protocol... ");
-      const result = await stampCfProtocol(rootPath, { fragment });
-      console.log(result.details || "ok");
-      if (!result.ok) {
-        throw new Error(result.details);
-      }
-    }
-
-    if (doRotate) {
-      const fragment =
-        meta.fragmentTo || (await detectFragmentFromConstants(rootPath));
-      const rotateMode = enc?.mode || meta.encryptionResolved || meta.encryption || "colossus";
-      process.stdout.write(
-        `[autosetup] rotate encryption (${rotateMode})... `
-      );
-      const result = await rotateProjectEncryption(rootPath, {
-        mode: rotateMode,
-        fragment,
-        meta,
-      });
-      console.log(result.details || "ok");
-      if (!result.ok) {
-        throw new Error(result.details);
-      }
-    }
-
-    if (doDecoy) {
-      const fragment =
-        meta.fragmentTo || (await detectFragmentFromConstants(rootPath));
-      process.stdout.write("[autosetup] decoy files... ");
-      const result = await generateProjectDecoys(rootPath, { fragment, meta });
-      console.log(result.details || "ok");
-      if (!result.ok) {
-        throw new Error(result.details);
-      }
-    }
-
-    if (doDex) {
-      const fragment =
-        meta.fragmentTo || (await detectFragmentFromConstants(rootPath));
-      process.stdout.write("[autosetup] dex variance... ");
-      const result = await stampDexVariance(rootPath, { fragment });
-      console.log(result.details || "ok");
-      if (!result.ok) {
-        throw new Error(result.details);
-      }
-    }
-
-    if (doNativeSurface) {
-      const fragment =
-        meta.fragmentTo || (await detectFragmentFromConstants(rootPath));
-      process.stdout.write("[autosetup] native surface... ");
-      const result = await renameNativeSurface(rootPath, { fragment });
-      console.log(result.details || "ok");
-      if (!result.ok) {
-        throw new Error(result.details);
-      }
-    }
-
-    if (doPaths || doReshuffle || doGameStamp) {
-      const fragment =
-        meta.fragmentTo || (await detectFragmentFromConstants(rootPath));
-      process.stdout.write("[autosetup] repair platform members + duplicate parts... ");
-      const repaired = await repairObfDrift(rootPath, { fragment });
-      console.log(repaired.details || "ok");
-    }
-
-    if (doPaths) {
-      process.stdout.write("[autosetup] path-check (final)... ");
-      check = await checkProjectPaths(rootPath);
-      if (check.ok) {
-        console.log(`ok (${check.checkedFiles} files)`);
-      } else {
-        console.log(`FOUND ${check.problems.length} broken refs:`);
-        for (const p of check.problems) {
-          console.log(`  - ${p.file} → ${p.ref}`);
-        }
-      }
-    }
-
-    if (doTouch) {
-      process.stdout.write("[autosetup] recreate files (timestamps)... ");
-      const result = await touchAllFiles(rootPath);
-      console.log(result.details || "ok");
-      if (!result.ok) {
-        throw new Error(result.details);
       }
     }
 
@@ -761,6 +600,9 @@ async function main() {
     }
 
     if (doPaths && !check.ok) {
+      process.exitCode = 2;
+    }
+    if (doNativeCheck && !nativeCheck.ok) {
       process.exitCode = 2;
     }
   } finally {

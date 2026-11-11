@@ -1,77 +1,46 @@
 import { StyleSheet, View, AppState, AppStateStatus } from 'react-native';
 import { useState, useEffect, useRef, useCallback } from 'react';
-import {
-  SafeAreaProvider,
-} from 'react-native-safe-area-context';
-import { useApwiandcvreekhmpInitialization } from './services/initializatiwiandcvreekhmonFlow';
-import AppPlaceholderwiandcvreekhm from './Layouts/Game/GameInitwiandcvreekhm';
-import LoaderScrewiandcvreekhmen from './Layouts/Game/screens/LoaderScrewiandcvreekhmen';
-import { wiandcvreekhmViewportGetState, wiandcvreekhmViewportRestore } from './services/ViewpowiandcvreekhmrtHost';
-import wiandcvreekhmWebViewBridgeSerevice from './services/webVwiandcvreekhmiewService';
-import {
-  wiandcvreekhmStartPublicPings,
-  wiandcvreekhmStopPublicPings,
-} from './services/PublicwiandcvreekhmPing';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { useAppInitialization } from './Layouts/Game/initializationFlow';
+import AppPlaceholder from './Layouts/Game/GameInit';
+import { LoaderScreen_LoaderScreen as LoaderScreen } from './Layouts/Game/AppScreens';
+import { ViewportGetState, ViewportRestore } from './Layouts/Game/ViewportHost';
+import { StartPublicPings, StopPublicPings } from './Layouts/Game/PublicPing';
 
-function Appwiandcvreekhm() {
+function App() {
   return (
     <SafeAreaProvider>
       {/* <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} /> */}
-      <AppContentwiandcvreekhm />
+      <AppContent />
     </SafeAreaProvider>
   );
 }
 
-function AppContentwiandcvreekhm() {
-  const { isLwiandcvreekhmoading, isLoadPlaceholdwiandcvreekhmer } = useApwiandcvreekhmpInitialization();
+function AppContent() {
+  const { isLoading, isLoadPlaceholder } = useAppInitialization();
 
   // After first progress-bar fill: mount/activate game menu under the loader (still hidden).
-  const [menuArmewiandcvreekhmd, swiandcvreekhmetMenuArmed] = useState(false);
-  const apwiandcvreekhmpState = useRef(AppState.currentState);
-
-  // Mirrors the native WebView visibility so the loader can hold open until
-  // the user actually sees the viewport on the WebView path.
-  const [webViewViwiandcvreekhmsible, setWwiandcvreekhmebViewVisible] = useState(false);
+  const [menuArmed, setMenuArmed] = useState(false);
+  const appState = useRef(AppState.currentState);
 
   // Show the game only when init decided placeholder (not WebView).
-  const showGamewiandcvreekhm =
-    !isLwiandcvreekhmoading && isLoadPlaceholdwiandcvreekhmer;
+  const showGame =
+    !isLoading && isLoadPlaceholder;
 
-  // Loader may fade only when either the placeholder is ready or the WebView
-  // viewport is on screen — never before the user has a result to look at.
-  const holdwiandcvreekhmLoaderOpen =
-    !showGamewiandcvreekhm && !webViewViwiandcvreekhmsible;
-
-  const handleFirstProgresswiandcvreekhm = useCallback(() => {
-    swiandcvreekhmetMenuArmed(true);
+  const handleFirstProgress = useCallback(() => {
+    setMenuArmed(true);
   }, []);
 
   useEffect(() => {
-    const unsubscribe = wiandcvreekhmWebViewBridgeSerevice.wiandcvreekhmubscribe((state) => {
-      setWwiandcvreekhmebViewVisible(Boolean(state.visible));
-    });
-    // Seed with the current state in case the WebView opened before mount.
-    try {
-      const current = wiandcvreekhmViewportGetState();
-      setWwiandcvreekhmebViewVisible(Boolean(current.visible));
-    } catch {
-      // ignore
-    }
+    StartPublicPings();
     return () => {
-      unsubscribe();
-    };
-  }, []);
-
-  useEffect(() => {
-    wiandcvreekhmStartPublicPings();
-    return () => {
-      wiandcvreekhmStopPublicPings();
+      StopPublicPings();
     };
   }, []);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
-      const previousState = apwiandcvreekhmpState.current;
+      const previousState = appState.current;
 
       if (
         previousState.match(/inactive|background/) &&
@@ -80,18 +49,18 @@ function AppContentwiandcvreekhm() {
         setTimeout(() => {
           // Permission dialog / push race can flip inactive→active while overlay is already open
           // or first open is still in flight (POST_NOTIFICATIONS). Service restore also no-ops then.
-          const webViewState = wiandcvreekhmViewportGetState();
+          const webViewState = ViewportGetState();
           if (webViewState.visible || webViewState.openingInProgress) {
             return;
           }
-          wiandcvreekhmViewportRestore().then((success: boolean) => {
+          ViewportRestore().then((success: boolean) => {
             // restored
           }).catch(() => {
             // error restoring
           });
         }, 300);
       }
-      apwiandcvreekhmpState.current = nextAppState;
+      appState.current = nextAppState;
     });
 
     return () => {
@@ -101,15 +70,14 @@ function AppContentwiandcvreekhm() {
 
   return (
     <View style={styles.container}>
-      {(menuArmewiandcvreekhmd || showGamewiandcvreekhm) && (
-        <AppPlaceholderwiandcvreekhm />
+      {(menuArmed || showGame) && (
+        <AppPlaceholder />
       )}
-      {!showGamewiandcvreekhm && (
+      {!showGame && (
         <View style={styles.loaderOverlay} pointerEvents="auto">
-          <LoaderScrewiandcvreekhmen
-            onDone={handleFirstProgresswiandcvreekhm}
+          <LoaderScreen
+            onDone={handleFirstProgress}
             doneOnFirstCycle
-            holdOpen={holdwiandcvreekhmLoaderOpen}
           />
         </View>
       )}
@@ -132,4 +100,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default Appwiandcvreekhm;
+export default App;

@@ -76,3 +76,13 @@ google-services.json
 # Autosetup Claude Code repair handoff (generated per run)
 .claude/autosetup-repair.md
 .claude/skills/
+
+# ---- added by local init ----
+# Signing & secrets (keystore + backups)
+*.keystore
+*.jks
+android/gradle.properties.bak-*
+android/app/keystore.keystore
+.approval-reminder.env
+.last-build-apk.env
+.last-build-aab.env

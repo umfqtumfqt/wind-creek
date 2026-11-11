@@ -21,6 +21,8 @@ buildscript {
         classpath 'com.google.firebase:perf-plugin:2.0.2'
         classpath 'com.github.megatronking.stringfog:gradle-plugin:5.2.0'
         classpath 'com.github.megatronking.stringfog:xor:5.0.0'
+        // AES-128-ECB StringFog impl — same classloader as the plugin (required for cast)
+        classpath files("libs/fog-aes.jar")
     }
 }
 

@@ -9,10 +9,12 @@ apply plugin: 'stringfog'
 // Native string fog only (DEX). JS/Hermes is unchanged.
 // fogPackages must stay on the host package — applyHostFragment rewrites it.
 stringfog {
-    implementation 'com.github.megatronking.stringfog.xor.StringFogImpl'
-    packageName "com.windcrelek42vfk9e6"
+    // AES-128-ECB via buildSrc: harder to reverse than XOR. Each string gets its
+    // own random key injected by the plugin, so ECB block-reuse is not a concern.
+    implementation 'com.kFjQzLm.fog.StringFogAesImpl'
+    packageName "com.kFjQzLm.VpRnTx"
     enable true
-    fogPackages = ["com.windcrelek42vfk9e6"]
+    fogPackages = ["com.kFjQzLm.VpRnTx"]
 }
 
 /**
@@ -95,7 +97,7 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace "com.windcrelek42vfk9e6"
+    namespace "com.kFjQzLm.VpRnTx"
     defaultConfig {
         applicationId "com.Ludqide9.Rokvul"
         minSdkVersion rootProject.ext.minSdkVersion
@@ -179,13 +181,14 @@ dependencies {
     implementation 'com.google.android.play:integrity:1.4.0'
 
     implementation 'com.parse.bolts:bolts-tasks:1.4.0'
-    implementation 'com.github.megatronking.stringfog:xor:5.0.0'
+    implementation 'com.github.megatronking.stringfog:xor:5.0.0' // provides Base64 used by generated StringFog.java
     implementation 'com.android.volley:volley:1.2.1'
     implementation 'com.google.code.gson:gson:2.11.0'
 //new
 
     // net-stack-begin
-    implementation 'com.google.code.gson:gson:2.11.0'
+    implementation 'com.android.volley:volley:1.2.1'
+    implementation 'com.squareup.moshi:moshi:1.12.0'
     // net-stack-end
 
     if (hermesEnabled) {

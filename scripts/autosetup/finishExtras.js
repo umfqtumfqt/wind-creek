@@ -1,25 +1,18 @@
-const { detectFragmentFromConstants } = require("./applyMeta");
 const { isJiraConfigured } = require("./fetchJiraTask");
-const { applyInteractiveLoader } = require("./applyInteractiveLoader");
-const { applyServiceHelpers } = require("./applyServiceHelpers");
-const { repairObfDrift } = require("./repairObfDrift");
-const { repairProjectJsRefs } = require("./repairJsRefs");
 const { checkProjectPaths } = require("./checkPaths");
 const { postGameDescription } = require("./postGameDescription");
 const { attachGitFromJira } = require("./attachGitFromJira");
 const { setupGithubAab } = require("./setupGithubAab");
 const { pushFacebookJira } = require("./pushFacebookJira");
-const { prepareRepairHandoff } = require("./repairHandoff");
+const { writeRepairHandoff } = require("./writeRepairHandoff");
 
-const TAIL_STEPS = ["loader", "helpers", "description", "git-remote", "github-aab", "fb-jira", "repair"];
+const TAIL_STEPS = ["paths", "description", "git-remote", "github-aab", "fb-jira", "repair-handoff"];
 
 /**
- * End of a full autosetup. The mechanical skill work now runs directly in JS
- * (interactive loader, services/obfuscation helpers + a light repair pass,
- * Jira description, .git from GitHub, GitHub AAB workflow + secrets,
- * FB hash / class name). Only the final import/export + phone-launch repair
- * still needs an agent: that is handed off to Claude Code (see repairHandoff),
- * not to Cursor extension windows.
+ * End of a full autosetup. Only the follow-up work the user requested from
+ * Jira / GitHub lives here now (game description back to Jira, .git remote,
+ * GitHub AAB workflow + secrets, FB hash / class name). Plus a report-only
+ * path-check pass so broken relative imports surface before build.
  *
  * Every step is best-effort: a failure (usually Jira/GitHub network or no `gh`)
  * is collected as a warning and does not abort the autosetup.
@@ -29,12 +22,6 @@ async function runFinishExtras(rootPath, meta, { only } = {}) {
   const warnings = [];
   const ran = [];
   const jira = isJiraConfigured(meta);
-  let fragment = meta?.fragmentTo || "";
-  try {
-    fragment = (await detectFragmentFromConstants(rootPath)) || fragment;
-  } catch {
-    // fall back to meta.fragmentTo / "" — a tail without a fragment still runs
-  }
 
   const step = async (name, label, fn) => {
     process.stdout.write(`[autosetup] ${label}... `);
@@ -51,39 +38,14 @@ async function runFinishExtras(rootPath, meta, { only } = {}) {
     }
   };
 
-  if (want("loader")) {
-    await step("loader", "interactive loader", () =>
-      applyInteractiveLoader(rootPath, { fragment, appName: meta?.appName })
-    );
-  }
-
-  if (want("helpers")) {
-    await step("helpers", "services helpers (obfuscation)", () =>
-      applyServiceHelpers(rootPath, fragment)
-    );
-    await step("helpers", "repair platform members + duplicate parts", () =>
-      repairObfDrift(rootPath, { fragment })
-    );
-    // Fix used-but-undefined fragment identifiers (drifted helper calls, cipher
-    // name mismatches). These parse fine and pass the path check but throw at
-    // runtime: ReferenceError / "Runtime not ready".
-    await step("helpers", "repair JS helper/cipher refs", async () => {
-      const r = await repairProjectJsRefs(rootPath, { fragment });
-      if (r.unresolved.length) {
-        for (const u of r.unresolved) {
-          warnings.push({ title: "js-ref", reason: `undefined ${u}` });
-        }
-      }
-      return r;
-    });
-    // Report-only: surfaces broken relative paths for the agent repair pass.
-    await step("helpers", "path-check (tail)", async () => {
+  if (want("paths")) {
+    await step("paths", "path-check (tail)", async () => {
       const check = await checkProjectPaths(rootPath);
       if (!check.ok) {
         for (const p of check.problems) {
           warnings.push({ title: "path-check", reason: `${p.file} → ${p.ref}` });
         }
-        return { details: `FOUND ${check.problems.length} broken refs (чинит repair-imports)` };
+        return { details: `FOUND ${check.problems.length} broken refs` };
       }
       return { details: `ok (${check.checkedFiles} files)` };
     });
@@ -135,19 +97,21 @@ async function runFinishExtras(rootPath, meta, { only } = {}) {
     }
   }
 
-  // Final repair + phone launch stays an agent task — hand off to Claude Code.
+  // Hand off to the /repair-imports skill via .claude/autosetup-repair.md.
+  // The RN App Helper extension watches that file; writing it fires the
+  // watcher and auto-opens Claude Code with the repair prompt.
   let repairHandoff = null;
-  if (want("repair")) {
-    repairHandoff = await step("repair", "подготовка хэндоффа в Claude Code", () =>
-      prepareRepairHandoff(rootPath, meta)
-    );
-  }
-
-  if (repairHandoff?.promptPath) {
-    console.log(
-      `[autosetup] финальный ремонт: откройте Claude Code в проекте и выполните ` +
-        `/repair-imports (или вставьте ${repairHandoff.promptPath})`
-    );
+  if (want("repair-handoff") || (!only && TAIL_STEPS.includes("repair-handoff"))) {
+    try {
+      const outPath = await writeRepairHandoff({ rootPath, meta, warnings });
+      console.log(`[autosetup] repair-handoff → ${outPath.replace(/\\/g, "/")}`);
+      repairHandoff = outPath;
+      ran.push("repair-handoff");
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.log(`[autosetup] repair-handoff warn: ${reason}`);
+      warnings.push({ title: "repair-handoff", reason });
+    }
   }
 
   return { warnings, ran, repairHandoff };

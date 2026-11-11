@@ -45,6 +45,13 @@ function sameRepo(a, b) {
   );
 }
 
+async function stripTokenFromConfig(rootPath) {
+  const configPath = path.join(rootPath, ".git", "config");
+  const raw = await fs.readFile(configPath, "utf8");
+  const next = raw.replace(/https:\/\/[^@\s]+@github\.com\//g, "https://github.com/");
+  if (next !== raw) await fs.writeFile(configPath, next, "utf8");
+}
+
 function sanitizeRepoName(raw) {
   const cleaned = String(raw || "")
     .trim()
@@ -177,7 +184,6 @@ async function attachGitFromJira(rootPath, meta) {
     parsed = { owner: viaToken.owner, repo: viaToken.repo };
   }
   const cleanUrl = `https://github.com/${parsed.owner}/${parsed.repo}.git`;
-  const tokenUrl = `https://x-access-token:${encodeURIComponent(creds.token)}@github.com/${parsed.owner}/${parsed.repo}.git`;
   const resolvedNote = viaToken
     ? viaToken.created
       ? `репо создан по токену ${parsed.owner}/${parsed.repo}`
@@ -195,10 +201,6 @@ async function attachGitFromJira(rootPath, meta) {
   if (hasGit) {
     const origin = await readOrigin(rootPath);
     if (sameRepo(origin, cleanUrl)) {
-      // Keep origin tokenised so `git push` works without an interactive prompt.
-      if (origin !== tokenUrl) {
-        runGit(["remote", "set-url", "origin", tokenUrl], rootPath);
-      }
       return {
         ok: true,
         skippedClone: true,
@@ -228,14 +230,15 @@ async function attachGitFromJira(rootPath, meta) {
     os.tmpdir(),
     `autosetup-git-${parsed.repo.replace(/[^\w.-]+/g, "_")}-${Date.now()}`
   );
+  const cloneUrl = `https://x-access-token:${encodeURIComponent(creds.token)}@github.com/${parsed.owner}/${parsed.repo}.git`;
   try {
-    runGit(["clone", "--quiet", tokenUrl, tempDir], os.tmpdir());
+    runGit(["clone", "--quiet", cloneUrl, tempDir], os.tmpdir());
     await fs.cp(path.join(tempDir, ".git"), gitDir, { recursive: true });
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
-  // Leave the token embedded in origin so subsequent pushes auth without a prompt.
-  runGit(["remote", "set-url", "origin", tokenUrl], rootPath);
+  runGit(["remote", "set-url", "origin", cleanUrl], rootPath);
+  await stripTokenFromConfig(rootPath);
   return {
     ok: true,
     skippedClone: false,

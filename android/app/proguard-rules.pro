@@ -31,9 +31,3 @@
 -keep,allowobfuscation class com.github.megatronking.stringfog.** { *; }
 # stringfog-end
 
-# dex-lanes-neverinline
-# Keep lane methods from being inlined away, but do not preserve lane00 names.
--keep,allowobfuscation class **.*DexLanes {
-    int lane*(int);
-    void touch(int);
-}

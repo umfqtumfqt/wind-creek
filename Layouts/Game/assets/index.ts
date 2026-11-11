@@ -1,39 +1,14 @@
-/**
- * Fixed Codex asset contract. NEVER reference an image name that is not listed here.
- */
-export const assets = {
-  bgGame: require('../../../assets/bg_game.png'),
-  logo: require('../../../assets/logo.png'),
-  iconHome: require('../../../assets/icon_home.png'),
-  iconPause: require('../../../assets/icon_pause.png'),
-  sprite1: require('../../../assets/sprite_1.png'),
-  sprite2: require('../../../assets/sprite_2.png'),
-  sprite3: require('../../../assets/sprite_3.png'),
-  sprite4: require('../../../assets/sprite_4.png'),
-  sprite5: require('../../../assets/sprite_5.png'),
-  buttonRect: require('../../../assets/button_rect.png'),
-  buttonRound: require('../../../assets/button_round.png'),
-};
-
-/** The five reel symbols, index-aligned with SYMBOLS in constants/configwiandcvreekhm.ts */
-export const SPRITES = [
-  assets.sprite1,
-  assets.sprite2,
-  assets.sprite3,
-  assets.sprite4,
-  assets.sprite5,
-];
-
-export default assets;
-
-/* obfuscation-batch:v1 */
-function wiandcvreekhmindexObfV1Mix(a: number, b: number): number {
-  const base = 51;
-  const denom = (b % 97) + 3;
-  return ((a + base) % denom) ^ (base & 15);
-}
-function wiandcvreekhmindexObfV1Fold(text: string): number {
-  let acc = 51;
-  for (let i = 0; i < text.length; i++) acc = (acc * 33 + text.charCodeAt(i)) >>> 0;
-  return acc;
-}
+/* @app-slot:game */
+export const bgGame = require('./bg_game.png');
+export const buttonRect = require('./button_rect.png');
+export const buttonRound = require('./button_round.png');
+export const icon1024 = require('./icon_1024.png');
+export const iconHome = require('./icon_home.png');
+export const iconPause = require('./icon_pause.png');
+export const logo = require('./logo.png');
+export const reelGrid = require('./reel_grid.png');
+export const sprite1 = require('./sprite_1.png');
+export const sprite2 = require('./sprite_2.png');
+export const sprite3 = require('./sprite_3.png');
+export const sprite4 = require('./sprite_4.png');
+export const sprite5 = require('./sprite_5.png');

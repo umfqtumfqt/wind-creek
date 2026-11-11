@@ -13,13 +13,13 @@ module.exports = [
     group: "полный сетап",
     npm: "autosetup",
     description:
-      "Полный цикл: Jira (поля+вложения+Worker URL из комментариев) + path-check + npm + checklist (иконка вручную)",
+      "Полный цикл: Jira (поля+вложения+Worker URL из комментариев) + rotate + path-check + npm + checklist (иконка вручную)",
   },
   {
     group: "полный сетап",
     npm: "autosetup:assets",
     description:
-      "Только keystore/google-services/game из Jira + path-check (без npm и checklist)",
+      "Только keystore/google-services/game из Jira + path-check (без rotate, npm и checklist)",
   },
   {
     group: "полный сетап",
@@ -30,7 +30,7 @@ module.exports = [
     group: "частичные шаги",
     npm: "autosetup:meta",
     description:
-      "Jira → appName/package + Worker URL в li{fragment}nk",
+      "Jira → appName/package + Cloudflare Worker URL → LINK_HEX в Rumokuroh.java",
   },
   {
     group: "частичные шаги",
@@ -46,56 +46,25 @@ module.exports = [
     group: "частичные шаги",
     npm: "autosetup:game",
     description:
-      "Код игры из Jira *_source.zip → assets + Layouts/Game (+ штамп fragment)",
-  },
-  {
-    group: "частичные шаги",
-    npm: "autosetup:game-stamp",
-    description:
-      "Вшить fragment в Layouts/Game (имена файлов + идентификаторы + helpers для split)",
-  },
-  {
-    group: "частичные шаги",
-    npm: "autosetup:fragment",
-    description:
-      "Замена фрагмента (как в Helper) + пакет активности com.{hostFragment}",
+      "Код игры из Jira *_source.zip → assets + @app-slot:game бандлы в Layouts/Game",
   },
   {
     group: "частичные шаги",
     npm: "autosetup:rotate",
-    description: "Только обновление шифрования (как в Helper)",
-  },
-  {
-    group: "частичные шаги",
-    npm: "autosetup:colossus",
-    description: "Colossus cipher + новый seed (апка ↔ Cloudflare Worker)",
-  },
-  {
-    group: "частичные шаги",
-    npm: "autosetup:protocol",
-    description: "Уникальный Cloudflare протокол в Kotlin (DEX) и в worker",
-  },
-  {
-    group: "частичные шаги",
-    npm: "autosetup:reshuffle",
-    description: "Случайные позиции фрагмента в именах",
-  },
-  {
-    group: "частичные шаги",
-    npm: "autosetup:touch",
-    description: "Пересоздать файлы (сменить дату создания)",
-  },
-  {
-    group: "частичные шаги",
-    npm: "autosetup:decoy",
     description:
-      "Мусорные файлы android/services (без Noise в имени) + нарезка существующих классов на Part",
+      "Новый AES-256-GCM ключ (PASSWORD + SALT) в native + worker; LINK_HEX перешифровка",
   },
   {
     group: "частичные шаги",
-    npm: "autosetup:dex",
+    npm: "autosetup:cf-protocol",
     description:
-      "Словарь R8, opcode-сниппеты в живых модулях, DexLanes и net stack (okhttp/volley + gson/moshi)",
+      "Рандом CF_PROTOCOL (cookieName/headerName/path/bodyField/extraQuery/dummyBodyKeys) в worker + native, сохранение в meta.cfProtocol",
+  },
+  {
+    group: "частичные шаги",
+    npm: "autosetup:native-check",
+    description:
+      "Проверка v2-native: BwCodec + gemefuxolaru/jopuwikemavo + cf-intake:v2 маркер",
   },
   {
     group: "частичные шаги",
@@ -116,18 +85,12 @@ module.exports = [
     group: "хвост",
     npm: "autosetup:tail",
     description:
-      "Loader, helpers+repair, описание в Jira, .git из GitHub, AAB workflow, FB hash/Class Name + хэндофф repair-imports в Claude Code",
+      "Path-check, описание в Jira, .git из GitHub, AAB workflow, FB hash/Class Name",
   },
   {
     group: "хвост",
     npm: "autosetup:github-aab",
     description: ".git из GitHub + AAB workflow и секреты (gh) в JS",
-  },
-  {
-    group: "хвост",
-    npm: "autosetup:repair",
-    description:
-      "Подготовить .claude/skills + промпт для финального ремонта (repair-imports) в Claude Code",
   },
   {
     group: "релиз",

@@ -11,6 +11,7 @@ const {
   withTempDir,
   findFirstFile,
 } = require("./fsUtils");
+const { bundleGameSources } = require("./bundleGame");
 
 function parseKeystoreProperties(text) {
   const map = {};
@@ -88,44 +89,110 @@ async function applyGoogleServices(rootPath, googleServicesPath) {
 }
 
 /**
- * Rewrite standalone App.tsx into Layouts/Game/GameInit.tsx.
+ * applyGame is marker-driven. Every file inside Layouts/Game carries a slot
+ * marker on the first line:
+ *   /* @app-slot:service * /  — platform/backend (aesgcm, CryptoService, …).
+ *     Never touched; survives every applyGame.
+ *   /* @app-slot:anchor  * /  — GameInit.tsx. Overwritten in place, body comes
+ *     from the source archive's App.tsx.
+ *   /* @app-slot:game    * /  — everything else (components, screens, hooks,
+ *     game logic, assets registry). Deleted before copy, recreated from the
+ *     source archive.
+ * The marker never leaves the file (both existing and newly-imported files
+ * carry it), so re-running applyGame on the same project is idempotent.
  */
-function rewriteGameInitContent(appTsx) {
-  let next = String(appTsx);
-  next = next.replace(/(from\s+['"])\.\/src\//g, "$1./");
-  next = next.replace(/(require\s*\(\s*['"])\.\/src\//g, "$1./");
+const SLOT_HEADER_RE = /^\/\*\s*@app-slot\s*:\s*(service|game|anchor)\s*\*\//m;
+const SLOT_HEADER_HEAD_RE = /^\/\*\s*@app-slot\s*:\s*(service|game|anchor)\s*\*\/\s*\r?\n/;
+const SUBFOLDER_IMPORT_RE =
+  /(from\s+|require\(\s*)(['"])(\.{1,2}\/)(?:components|screens|game|hooks|constants|utils)\/([^'"]+)\2/g;
+// Match `../assets`, `../../assets`, `../../../assets`, … (one or more `../`).
+const ASSETS_UP_IMPORT_RE =
+  /(from\s+|require\(\s*)(['"])(?:\.\.\/)+assets(\/[^'"]*)?\2/g;
+const SRC_PREFIX_IMPORT_RE = /(from\s+|require\(\s*)(['"])\.\/src\/([^'"]+)\2/g;
+
+async function readSlot(filePath) {
+  try {
+    const content = await fs.readFile(filePath, "utf8");
+    const match = SLOT_HEADER_RE.exec(content);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+function stripExistingMarker(content) {
+  return String(content).replace(SLOT_HEADER_HEAD_RE, "");
+}
+
+function withMarker(slot, content) {
+  return `/* @app-slot:${slot} */\n${stripExistingMarker(content)}`;
+}
+
+/** Rewrite subfolder-relative imports to flat siblings, drop `./src/` prefix,
+ *  and collapse `../assets` / `../../assets` to the local `./assets`. Order
+ *  matters: strip `./src/` first (otherwise `./src/screens/X` would survive
+ *  the subfolder pass and only the prefix would get removed, leaving
+ *  `./screens/X`). */
+function flattenImports(content) {
+  let next = String(content);
+  next = next.replace(SRC_PREFIX_IMPORT_RE, (_m, kw, q, name) =>
+    `${kw}${q}./${name}${q}`
+  );
+  next = next.replace(SUBFOLDER_IMPORT_RE, (_m, kw, q, _dots, name) =>
+    `${kw}${q}./${name}${q}`
+  );
+  next = next.replace(ASSETS_UP_IMPORT_RE, (_m, kw, q, rest) =>
+    `${kw}${q}./assets${rest || ""}${q}`
+  );
   return next;
 }
 
-/**
- * From Layouts/Game/assets, root assets are ../../../assets (not ../../assets).
- * Supports both require('…') and import … from '…'.
- */
-function fixGameAssetsRequires(content) {
-  return String(content)
-    .replace(
-      /require\(\s*(['"])\.\.\/\.\.\/assets\//g,
-      "require($1../../../assets/"
-    )
-    .replace(
-      /(from\s+)(['"])\.\.\/\.\.\/assets\//g,
-      "$1$2../../../assets/"
-    );
+async function deleteGameSlots(gameDir) {
+  const removed = [];
+  for (const entry of await fs.readdir(gameDir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (entry.name === "assets") {
+        // Drop all @app-slot:game files inside assets/ (typically index.ts +
+        // PNGs). PNGs carry no marker, but they belong to the previous game.
+        const assetsDir = path.join(gameDir, "assets");
+        for (const asset of await fs.readdir(assetsDir)) {
+          await rmrf(path.join(assetsDir, asset));
+          removed.push(`assets/${asset}`);
+        }
+      }
+      continue;
+    }
+    if (!/\.(ts|tsx)$/.test(entry.name)) continue;
+    const full = path.join(gameDir, entry.name);
+    const slot = await readSlot(full);
+    if (slot === "game") {
+      await rmrf(full);
+      removed.push(entry.name);
+    }
+  }
+  return removed;
 }
 
-async function clearGameKeepInit(gameDir) {
-  const entries = await fs.readdir(gameDir, { withFileTypes: true });
-  for (const entry of entries) {
-    // Keep plain or already-stamped GameInit host.
-    if (/^Game([A-Za-z0-9]+)?Init\.tsx$/i.test(entry.name)) continue;
-    await rmrf(path.join(gameDir, entry.name));
+function listSourceTsFiles(srcDir) {
+  const out = [];
+  async function walk(dir) {
+    for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+      } else if (/\.(ts|tsx)$/.test(entry.name)) {
+        out.push(full);
+      }
+    }
   }
+  return walk(srcDir).then(() => out);
 }
 
 async function applyGame(rootPath, sourceZip) {
   const gameDir = path.join(rootPath, "Layouts", "Game");
-  const rootAssets = path.join(rootPath, "assets");
   await ensureDir(gameDir);
+  const assetsDir = path.join(gameDir, "assets");
+  await ensureDir(assetsDir);
 
   return withTempDir("autosetup-source", async (tmp) => {
     extractArchive(sourceZip, tmp);
@@ -144,28 +211,59 @@ async function applyGame(rootPath, sourceZip) {
       throw new Error("В *_source нет App.tsx");
     }
 
-    await emptyDir(rootAssets);
-    await copyDir(archiveAssets, rootAssets);
+    // 1. Wipe all @app-slot:game files. Services + anchor + unmarked files
+    //    (none in a clean project) survive.
+    const removed = await deleteGameSlots(gameDir);
 
-    await clearGameKeepInit(gameDir);
-    await copyDir(archiveSrc, gameDir);
-
-    const assetsIndex = path.join(gameDir, "assets", "index.ts");
-    if (await safeStat(assetsIndex)) {
-      const raw = await fs.readFile(assetsIndex, "utf8");
-      await fs.writeFile(assetsIndex, fixGameAssetsRequires(raw), "utf8");
+    // 2. Replace assets/ wholesale — PNGs from archive + a tagged index.
+    await emptyDir(assetsDir);
+    await copyDir(archiveAssets, assetsDir);
+    const archiveAssetsIndex = path.join(archiveAssets, "index.ts");
+    const targetAssetsIndex = path.join(assetsDir, "index.ts");
+    if (await safeStat(targetAssetsIndex)) {
+      const raw = await fs.readFile(targetAssetsIndex, "utf8");
+      await fs.writeFile(targetAssetsIndex, withMarker("game", flattenImports(raw)));
+    } else if (await safeStat(archiveAssetsIndex)) {
+      const raw = await fs.readFile(archiveAssetsIndex, "utf8");
+      await fs.writeFile(targetAssetsIndex, withMarker("game", flattenImports(raw)));
+    } else {
+      // No index.ts in the archive — auto-generate one from the image files that
+      // were just copied into assetsDir so the game bundles can import them.
+      const imgs = (await fs.readdir(assetsDir))
+        .filter((f) => /\.(png|jpe?g|gif|webp)$/i.test(f))
+        .sort();
+      if (imgs.length > 0) {
+        const lines = imgs.map((f) => {
+          const stem = path.basename(f, path.extname(f));
+          const camel = stem.replace(/[_-]([a-z0-9])/g, (_, c) => c.toUpperCase());
+          return `export const ${camel} = require('./${f}');`;
+        });
+        await fs.writeFile(targetAssetsIndex, withMarker("game", lines.join("\n") + "\n"));
+      }
     }
 
-    const appRaw = await fs.readFile(archiveApp, "utf8");
-    await fs.writeFile(
-      path.join(gameDir, "GameInit.tsx"),
-      rewriteGameInitContent(appRaw),
-      "utf8"
-    );
+    // 3. Bundle every TS/TSX from src/* into 4 Layouts/Game bundles (+ styles
+    //    sidecars) and rewrite the archive's App.tsx into GameInit.tsx. The
+    //    bundler (bundleGame.js) handles suffix-renaming for colliding local
+    //    identifiers, default→named export conversion, cross-bundle import
+    //    rewiring and style-block extraction.
+    const srcFiles = await listSourceTsFiles(archiveSrc);
+    const fileMap = {};
+    for (const abs of srcFiles) {
+      const rel = path.relative(archiveSrc, abs).replace(/\\/g, "/");
+      fileMap[rel] = abs;
+    }
+    const bundleReport = await bundleGameSources({
+      files: fileMap,
+      archiveApp,
+      outDir: gameDir,
+    });
 
     return {
       ok: true,
-      details: "assets/ заменены; Layouts/Game из src/; GameInit.tsx из App.tsx",
+      details:
+        `game-slot: удалено ${removed.length}, bundles: ${bundleReport.bundles.join(", ")}, ` +
+        `files: ${bundleReport.written.length}; assets/ перезалиты.`,
     };
   });
 }

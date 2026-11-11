@@ -1,381 +1,346 @@
+/**
+ * Rotate the AES-256-GCM key used by the Cloudflare intake path and update
+ * every place that holds a copy of the password / salt / encrypted
+ * Cloudflare URL (LINK_HEX). On each call a fresh random password and salt
+ * are generated and written in lockstep:
+ *
+ *   - android/.../modules/Qelujowofahuhe.kt (PASSWORD + SALT consts — native AES-GCM)
+ *   - cloudflare-worker/index.js            (AES_PASSWORD + AES_SALT)
+ *   - android/.../modules/Rumokuroh.java    (LINK_HEX — only the encrypted URL)
+ *
+ * The current LINK_HEX is decrypted with the OLD key, re-encrypted with the
+ * NEW key and written back to Rumokuroh.java. If PASSWORD/SALT consts ever
+ * move into Rumokuroh.java as well, patchJavaPasswordAndSalt updates them
+ * too; until then it's a no-op there.
+ */
+
 const fs = require("node:fs/promises");
 const path = require("node:path");
-const { safeStat } = require("./fsUtils");
-const { collectWorkspaceFiles } = require("./replaceFragment");
+const crypto = require("node:crypto");
+const { reencryptDexInWorker } = require("./encryptDex");
 
-const DEFAULT_HELPER_EXT =
-  "E:\\TD\\CursorExtensions\\ReactNativeAppHelperExtension";
-const DEFAULT_HELPER_ROOT = path.join(
-  DEFAULT_HELPER_EXT,
-  "vscode-rn-app-helper-root"
-);
+const PBKDF2_ITERATIONS = 100000;
+const IV_LEN = 12;
+const TAG_LEN = 16;
 
-function resolveHelperRoot(meta, projectRoot) {
-  const candidates = [];
-  if (meta?.helperRoot) candidates.push(path.resolve(meta.helperRoot));
-  candidates.push(DEFAULT_HELPER_ROOT);
-  candidates.push(path.join(DEFAULT_HELPER_EXT));
-  candidates.push(path.resolve(projectRoot, "..", "ReactNativeAppHelperExtension"));
-  candidates.push(
-    path.resolve(projectRoot, "..", "ReactNativeAppHelperExtension", "vscode-rn-app-helper-root")
-  );
-  return candidates;
+const PASSWORD_ALPHABET =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+function randomPassword(length = 28) {
+  const bytes = crypto.randomBytes(length);
+  let out = "";
+  for (let i = 0; i < length; i++) out += PASSWORD_ALPHABET[bytes[i] % PASSWORD_ALPHABET.length];
+  return out;
 }
 
-/**
- * Prefer multi-algo root helper (vscode-rn-app-helper-root/projectCrypto.js).
- * Fall back to per-algo packages vscode-rn-app-helper-${algo}/projectCrypto.js.
- */
-function candidateCryptoPaths(root, algo) {
-  const paths = [];
-  const base = path.basename(root).toLowerCase();
-  // meta.helperRoot points directly at vscode-rn-app-helper-root
-  paths.push(path.join(root, "projectCrypto.js"));
-  // meta.helperRoot points at extension parent
-  if (base !== "vscode-rn-app-helper-root") {
-    paths.push(path.join(root, "vscode-rn-app-helper-root", "projectCrypto.js"));
-    paths.push(path.join(root, `vscode-rn-app-helper-${algo}`, "projectCrypto.js"));
+function randomSalt(length = 16) {
+  return crypto.randomBytes(length);
+}
+
+function deriveKey(password, salt) {
+  return crypto.pbkdf2Sync(Buffer.from(password, "utf8"), salt, PBKDF2_ITERATIONS, 32, "sha256");
+}
+
+function encryptHex(plain, password, salt) {
+  const key = deriveKey(password, salt);
+  const iv = crypto.randomBytes(IV_LEN);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const ct = Buffer.concat([cipher.update(Buffer.from(plain, "utf8")), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, ct, tag]).toString("hex").toUpperCase();
+}
+
+function decryptHex(hex, password, salt) {
+  const buf = Buffer.from(hex, "hex");
+  if (buf.length < IV_LEN + TAG_LEN) throw new Error("payload too short");
+  const iv = buf.subarray(0, IV_LEN);
+  const ct = buf.subarray(IV_LEN, buf.length - TAG_LEN);
+  const tag = buf.subarray(buf.length - TAG_LEN);
+  const key = deriveKey(password, salt);
+  const dec = crypto.createDecipheriv("aes-256-gcm", key, iv);
+  dec.setAuthTag(tag);
+  return Buffer.concat([dec.update(ct), dec.final()]).toString("utf8");
+}
+
+function kotlinSaltLiteral(salt) {
+  const parts = [];
+  for (const b of salt) {
+    const h = b.toString(16).padStart(2, "0");
+    parts.push(b >= 0x80 ? `0x${h}.toByte()` : `0x${h}`);
   }
-  return paths;
+  // Format: 8 bytes per line.
+  const rows = [];
+  for (let i = 0; i < parts.length; i += 8) rows.push(parts.slice(i, i + 8).join(", "));
+  return rows.join(",\n            ");
 }
 
-function loadProjectCrypto(mode, meta, projectRoot) {
-  const algo = String(mode || "rc4").toLowerCase();
-  const errors = [];
-  for (const root of resolveHelperRoot(meta, projectRoot)) {
-    for (const cryptoPath of candidateCryptoPaths(root, algo)) {
-      try {
-        // eslint-disable-next-line import/no-dynamic-require, global-require
-        const mod = require(cryptoPath);
-        return { ok: true, crypto: mod, helperRoot: root, cryptoPath };
-      } catch (err) {
-        errors.push(`${cryptoPath}: ${err.message}`);
+function jsSaltLiteral(salt) {
+  const parts = [];
+  for (const b of salt) parts.push(`0x${b.toString(16).padStart(2, "0")}`);
+  const rows = [];
+  for (let i = 0; i < parts.length; i += 8) rows.push(parts.slice(i, i + 8).join(", "));
+  return rows.join(",\n  ");
+}
+
+function javaSaltLiteral(salt) {
+  const parts = [];
+  for (const b of salt) {
+    const h = b.toString(16).padStart(2, "0");
+    parts.push(b >= 0x80 ? `(byte) 0x${h}` : `0x${h}`);
+  }
+  const rows = [];
+  for (let i = 0; i < parts.length; i += 8) rows.push(parts.slice(i, i + 8).join(", "));
+  return rows.join(",\n        ");
+}
+
+async function safeRead(p) {
+  try { return await fs.readFile(p, "utf8"); } catch { return null; }
+}
+
+async function findAndroidSource(rootPath, filename) {
+  const base = path.join(rootPath, "android", "app", "src", "main", "java");
+  async function walk(dir) {
+    let entries;
+    try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return null; }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        const hit = await walk(full);
+        if (hit) return hit;
+      } else if (e.name === filename) {
+        return full;
       }
     }
+    return null;
   }
-  return {
-    ok: false,
-    details:
-      `Не найден projectCrypto для ${algo}. Укажи meta.helperRoot (vscode-rn-app-helper-root).\n` +
-      errors.join("\n"),
-  };
+  return walk(base);
 }
 
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function detectConstantsNaming(constantsContent, fragment) {
-  const naming = {
-    linkConstName: `li${fragment}nk`,
-    cruxDocKeyConstName: `CRUX_${fragment}_DOC_KEY`,
-  };
-  if (!constantsContent || !fragment) return naming;
-
-  const linkMatch = constantsContent.match(
-    new RegExp(`export const (li${escapeRegExp(fragment)}nk)\\s*=`)
-  );
-  if (linkMatch?.[1]) naming.linkConstName = linkMatch[1];
-
-  const docKeyMatch = constantsContent.match(
-    new RegExp(`export const (CRUX_${escapeRegExp(fragment)}_DOC_KEY)\\s*=`)
-  );
-  if (docKeyMatch?.[1]) naming.cruxDocKeyConstName = docKeyMatch[1];
-
-  return naming;
-}
-
-function shouldSkipEncryptionRotationFile(filePath) {
-  const normalized = filePath.replace(/\\/g, "/").toLowerCase();
-  if (normalized.includes("/scripts/")) return true;
-  if (normalized.endsWith("/projectcrypto.js")) return true;
-  return false;
-}
-
-async function findAllFilesContainingSnippet(rootPath, snippet) {
-  const filePaths = await collectWorkspaceFiles(rootPath);
-  const matches = [];
-  for (const filePath of filePaths) {
-    if (shouldSkipEncryptionRotationFile(filePath)) continue;
-    try {
-      const content = await fs.readFile(filePath, "utf8");
-      if (content.includes(snippet)) matches.push(filePath);
-    } catch {
-      // skip
+/** Walk the modules dir and return the path of the first file whose source matches pattern. */
+async function findAndroidSourceByContent(rootPath, pattern) {
+  const base = path.join(rootPath, "android", "app", "src", "main", "java");
+  async function walk(dir) {
+    let entries;
+    try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return null; }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        const hit = await walk(full);
+        if (hit) return hit;
+      } else if (/\.(kt|java)$/.test(e.name)) {
+        try {
+          const src = await fs.readFile(full, "utf8");
+          if (pattern.test(src)) return { filePath: full, src };
+        } catch {}
+      }
     }
+    return null;
   }
-  return matches;
+  return walk(base);
 }
 
-/**
- * Prefer a real `const NAME = 'hex'` assignment, not a string mention in comments/scripts.
- */
-async function findFileWithEncConst(rootPath, constName) {
-  const assignRe = new RegExp(
-    `(?:export\\s+)?const\\s+${escapeRegExp(constName)}\\s*=\\s*'[0-9A-Fa-f]+'`
-  );
-  const candidates = await findAllFilesContainingSnippet(rootPath, constName);
-  for (const filePath of candidates) {
-    try {
-      const content = await fs.readFile(filePath, "utf8");
-      if (assignRe.test(content)) return filePath;
-    } catch {
-      // skip
-    }
+function readCurrentPassword(content, kind) {
+  // Kotlin: `private const val PASSWORD = "..."`
+  // Java:   `public static final String PASSWORD = "...";`
+  // Worker: `const AES_PASSWORD = "..."`
+  const patterns = [
+    /private\s+const\s+val\s+PASSWORD\s*=\s*"([^"]*)"/,
+    /public\s+static\s+final\s+String\s+PASSWORD\s*=\s*"([^"]*)"/,
+    /const\s+AES_PASSWORD\s*=\s*"([^"]*)"/,
+  ];
+  for (const re of patterns) {
+    const m = re.exec(content);
+    if (m) return m[1];
   }
   return null;
 }
 
-async function collectEncryptedArrayFilePaths(rootPath, crypto) {
-  const snippets = [
-    "UNSUPPORTED_DEVICES_ENCRYPTED",
-    "FORBIDDEN_DEVICE_KEYWORDS_ENCRYPTED",
-    "FORBIDDEN_GPU_KEYWORDS_ENCRYPTED",
-  ];
-  const paths = new Set();
-
-  for (const snippet of snippets) {
-    const matches = await findAllFilesContainingSnippet(rootPath, snippet);
-    for (const filePath of matches) {
-      if (shouldSkipEncryptionRotationFile(filePath)) continue;
-      const content = await fs.readFile(filePath, "utf8");
-      if (crypto.fileHasEncryptedConstArrays(content)) paths.add(filePath);
-    }
+function readCurrentSalt(content, kind) {
+  // Kotlin: `private val SALT = byteArrayOf(0x.., 0x.., …)`
+  // Java:   `public static final byte[] SALT = new byte[] { 0x.., 0x.., … };`
+  // Worker: `const AES_SALT = new Uint8Array([0x.., …])`
+  const re = kind === "kotlin"
+    // Use greedy [\s\S]* + \n\s*\) so we match to the closing ) on its own
+    // line, not the first ) inside a .toByte() call.
+    ? /private\s+val\s+SALT\s*=\s*byteArrayOf\(([\s\S]*)\n\s*\)/
+    : kind === "java"
+      ? /public\s+static\s+final\s+byte\[\]\s+SALT\s*=\s*new\s+byte\[\]\s*\{([\s\S]*?)\}/
+      : /const\s+AES_SALT\s*=\s*new\s+Uint8Array\(\[([\s\S]*?)\]\)/;
+  const m = re.exec(content);
+  if (!m) return null;
+  const bytes = [];
+  for (const num of m[1].matchAll(/0x([0-9a-fA-F]{1,2})/g)) {
+    bytes.push(parseInt(num[1], 16));
   }
-
-  const allFiles = await collectWorkspaceFiles(rootPath);
-  for (const filePath of allFiles) {
-    if (path.basename(filePath) !== "deviceBlockLists.generated.ts") continue;
-    if (shouldSkipEncryptionRotationFile(filePath)) continue;
-    const content = await fs.readFile(filePath, "utf8");
-    if (crypto.fileIsDeviceBlockListsGenerated(filePath, content)) {
-      paths.add(filePath);
-    }
-  }
-
-  return [...paths];
+  return Buffer.from(bytes);
 }
 
-async function resolveConstantsPath(rootPath, fragment) {
-  const expected = `const${fragment}ntsVariable.ts`;
-  const dirs = [
-    path.join(rootPath, "services", "constants"),
-    path.join(rootPath, "constants"),
-  ];
-  for (const dir of dirs) {
-    const full = path.join(dir, expected);
-    if (await safeStat(full)) return full;
-  }
-  return null;
+function readLinkHex(content) {
+  const m = /(?:public\s+static\s+final\s+String|const\s+val)\s+LINK_HEX\s*=\s*"([^"]*)"/.exec(content);
+  return m ? m[1] : null;
 }
 
-/**
- * Same as RN App Helper «Обновить шифрование».
- * Deterministic ciphers (typex, fernet, …) may verify without rewriting hex —
- * that still counts as success when at least one value decrypts cleanly.
- */
-async function rotateProjectEncryption(rootPath, { mode, fragment, meta }) {
-  const loaded = loadProjectCrypto(mode, meta, rootPath);
-  if (!loaded.ok) return { ok: false, details: loaded.details };
-
-  const crypto = loaded.crypto;
-  let credentials = undefined;
-  if (String(mode).toLowerCase() === "colossus") {
-    try {
-      const { readProjectColossusCredentials } = require("./applyColossus");
-      credentials = await readProjectColossusCredentials(rootPath);
-    } catch {
-      credentials = undefined;
-    }
-  }
-  const updated = [];
-  const warnings = [];
-  let totalRotated = 0;
-  let totalChecked = 0;
-  let decryptErrors = 0;
-  let filesChanged = 0;
-
-  const encryptedArrayPaths = await collectEncryptedArrayFilePaths(rootPath, crypto);
-  const sharedInitPath = await findFileWithEncConst(
-    rootPath,
-    "FACEBOOK_REFERRER_HOST_ENC"
+function patchKotlinPasswordAndSalt(content, newPassword, newSalt) {
+  let next = content;
+  next = next.replace(
+    /(private\s+const\s+val\s+PASSWORD\s*=\s*)"[^"]*"/,
+    `$1"${newPassword}"`
   );
-  const webViewPath = await findFileWithEncConst(rootPath, "DIIA_APP_HOST_ENC");
+  // Greedy [\s\S]* + \n\s*(\)) matches the closing ) on its own line,
+  // not the first ) inside a .toByte() call.
+  next = next.replace(
+    /(private\s+val\s+SALT\s*=\s*byteArrayOf\()[\s\S]*\n\s*(\))/,
+    `$1\n            ${kotlinSaltLiteral(newSalt)},\n        $2`
+  );
+  return next;
+}
 
-  for (const targetPath of encryptedArrayPaths) {
-    const content = await fs.readFile(targetPath, "utf8");
-    const result = crypto.rotateInitFlowEncryptedConstants(content, mode, credentials);
-    totalChecked += result.count || 0;
-    decryptErrors += result.errors?.length || 0;
-    if (result.changed) {
-      await fs.writeFile(targetPath, result.content, "utf8");
-      filesChanged += 1;
-      totalRotated += result.count;
-      updated.push(`${path.relative(rootPath, targetPath)} (${result.count})`);
-    } else if (result.count > 0) {
-      updated.push(
-        `${path.relative(rootPath, targetPath)} (проверено ${result.count}, без изменений)`
-      );
-    }
-    if (result.errors?.length) {
-      warnings.push(`${path.basename(targetPath)} decrypt errors: ${result.errors.join(", ")}`);
-    }
-  }
+function patchJavaPasswordAndSalt(content, newPassword, newSalt) {
+  let next = content;
+  next = next.replace(
+    /(public\s+static\s+final\s+String\s+PASSWORD\s*=\s*)"[^"]*"/,
+    `$1"${newPassword}"`
+  );
+  next = next.replace(
+    /(public\s+static\s+final\s+byte\[\]\s+SALT\s*=\s*new\s+byte\[\]\s*\{)[\s\S]*?(\};)/,
+    `$1\n        ${javaSaltLiteral(newSalt)}\n    $2`
+  );
+  return next;
+}
 
-  if (sharedInitPath) {
-    const content = await fs.readFile(sharedInitPath, "utf8");
-    const result = crypto.rotateEncStringConstants(content, mode, credentials);
-    totalChecked += result.count || 0;
-    decryptErrors += result.errors?.length || 0;
-    if (result.changed) {
-      await fs.writeFile(sharedInitPath, result.content, "utf8");
-      filesChanged += 1;
-      totalRotated += result.count;
-      updated.push(`${path.relative(rootPath, sharedInitPath)} (${result.count})`);
-    } else if (result.count > 0) {
-      updated.push(
-        `${path.relative(rootPath, sharedInitPath)} (проверено ${result.count}, без изменений)`
-      );
-    }
-    if (result.errors?.length) {
-      warnings.push(`sharedInit decrypt errors: ${result.errors.join(", ")}`);
-    }
-  } else {
-    warnings.push("FACEBOOK_REFERRER_HOST_ENC не найден (опционально)");
-  }
+function patchJavaLinkHex(content, newHex) {
+  return content.replace(
+    /(public\s+static\s+final\s+String\s+LINK_HEX\s*=\s*)"[^"]*"/,
+    `$1"${newHex}"`
+  );
+}
 
-  if (webViewPath) {
-    const content = await fs.readFile(webViewPath, "utf8");
-    const result = crypto.rotateWebViewEncConstants(content, mode, credentials);
-    totalChecked += result.count || 0;
-    decryptErrors += result.errors?.length || 0;
-    if (result.changed) {
-      await fs.writeFile(webViewPath, result.content, "utf8");
-      filesChanged += 1;
-      totalRotated += result.count;
-      updated.push(`${path.relative(rootPath, webViewPath)} (${result.count})`);
-    } else if (result.count > 0) {
-      updated.push(
-        `${path.relative(rootPath, webViewPath)} (проверено ${result.count}, без изменений)`
-      );
-    }
-    if (result.errors?.length) {
-      warnings.push(`WebView decrypt errors: ${result.errors.join(", ")}`);
-    }
-  } else {
-    warnings.push("DIIA_APP_HOST_ENC не найден (опционально)");
-  }
+function patchKotlinLinkHex(content, newHex) {
+  return content.replace(
+    /(const\s+val\s+LINK_HEX\s*=\s*)"[^"]*"/,
+    `$1"${newHex}"`
+  );
+}
 
-  const frag = String(fragment || "").trim();
-  let hasLinkOrCrux = false;
-  if (frag) {
-    const constantsPath = await resolveConstantsPath(rootPath, frag);
-    if (!constantsPath) {
-      warnings.push(`const${frag}ntsVariable.ts не найден`);
-    } else {
-      let constantsContent = await fs.readFile(constantsPath, "utf8");
-      const naming = detectConstantsNaming(constantsContent, frag);
+function patchWorkerPasswordAndSalt(content, newPassword, newSalt) {
+  let next = content;
+  next = next.replace(
+    /(const\s+AES_PASSWORD\s*=\s*)"[^"]*"/,
+    `$1"${newPassword}"`
+  );
+  next = next.replace(
+    /(const\s+AES_SALT\s*=\s*new\s+Uint8Array\(\[)[\s\S]*?(\]\))/,
+    `$1\n  ${jsSaltLiteral(newSalt)},\n$2`
+  );
+  return next;
+}
 
-      // Legacy local encrypted worker URL const (optional after Crux migration).
-      if (
-        new RegExp(`export const ${escapeRegExp(naming.linkConstName)}\\s*=`).test(
-          constantsContent
-        )
-      ) {
-        const result = crypto.rotateLinkConstInConstants(
-          constantsContent,
-          naming.linkConstName,
-          mode,
-          credentials
-        );
-        totalChecked += result.count || 0;
-        // Const is present. A stale hex (encrypted before the colossus seed
-        // rotation) is a warning: run.js rewrites it from the Jira URL.
-        // Do not abort the rest of autosetup on this alone.
-        hasLinkOrCrux = true;
-        if (result.changed) {
-          constantsContent = result.content;
-          await fs.writeFile(constantsPath, constantsContent, "utf8");
-          filesChanged += 1;
-          totalRotated += result.count;
-          updated.push(
-            `${path.relative(rootPath, constantsPath)} → ${naming.linkConstName}`
-          );
-        } else if (result.count > 0) {
-          updated.push(
-            `${path.relative(rootPath, constantsPath)} → ${naming.linkConstName} (проверено, без изменений)`
-          );
-        }
-        if (result.errors?.length) {
-          warnings.push(`link const errors: ${result.errors.join(", ")}`);
-        }
-      }
+/** Patch PASSWORD and SALT in the DEX loader Kotlin module (companion object). */
+function patchDexLoaderPasswordAndSalt(content, newPassword, newSalt) {
+  let next = content;
+  next = next.replace(
+    /(private\s+const\s+val\s+DEX_PASSWORD\s*=\s*)"[^"]*"/,
+    `$1"${newPassword}"`
+  );
+  next = next.replace(
+    /(private\s+val\s+DEX_SALT\s*=\s*byteArrayOf\()[\s\S]*\n\s*(\))/,
+    `$1\n            ${kotlinSaltLiteral(newSalt)},\n        $2`
+  );
+  return next;
+}
 
-      // Crux document key (encrypted "link") — CRUX_{fragment}_DOC_KEY
-      if (
-        new RegExp(
-          `export const ${escapeRegExp(naming.cruxDocKeyConstName)}\\s*=`
-        ).test(constantsContent)
-      ) {
-        const result = crypto.rotateLinkConstInConstants(
-          constantsContent,
-          naming.cruxDocKeyConstName,
-          mode,
-          credentials
-        );
-        totalChecked += result.count || 0;
-        decryptErrors += result.errors?.length || 0;
-        if (result.count > 0) hasLinkOrCrux = true;
-        if (result.changed) {
-          constantsContent = result.content;
-          await fs.writeFile(constantsPath, constantsContent, "utf8");
-          filesChanged += 1;
-          totalRotated += result.count;
-          updated.push(
-            `${path.relative(rootPath, constantsPath)} → ${naming.cruxDocKeyConstName}`
-          );
-        } else if (result.count > 0) {
-          updated.push(
-            `${path.relative(rootPath, constantsPath)} → ${naming.cruxDocKeyConstName} (проверено, без изменений)`
-          );
-        }
-        if (result.errors?.length) {
-          warnings.push(`CRUX DOC_KEY errors: ${result.errors.join(", ")}`);
-        }
-      } else if (!hasLinkOrCrux) {
-        warnings.push(`li${frag}nk / CRUX DOC_KEY не найдены`);
-      }
-    }
-  }
+async function rotateProjectEncryption(options = {}) {
+  const projectRoot = options.projectRoot || process.cwd();
 
-  if (filesChanged === 0) {
-    if (decryptErrors === 0) {
-      return {
-        ok: true,
-        details:
-          `проверено ${totalChecked} values / ${updated.length} files (${String(mode).toUpperCase()}, без изменений)` +
-          (warnings.length ? `; warn: ${warnings.join("; ")}` : ""),
-      };
-    }
+  // Find files by content so they still work after renameModules renames them.
+  const rumoResult = await findAndroidSourceByContent(projectRoot, /LINK_HEX\s*=\s*"/);
+  const qeluResult = await findAndroidSourceByContent(projectRoot, /private\s+const\s+val\s+PASSWORD\s*=\s*"/);
+  const dexResult  = await findAndroidSourceByContent(projectRoot, /private\s+const\s+val\s+DEX_SHA256\s*=\s*"/);
+  const workerPath = path.join(projectRoot, "cloudflare-worker", "index.js");
+
+  if (!rumoResult) return { ok: false, title: "LINK_HEX модуль не найден", details: "" };
+  if (!qeluResult) return { ok: false, title: "AES-GCM PASSWORD модуль не найден", details: "" };
+  const workerRaw = await safeRead(workerPath);
+  if (workerRaw == null) return { ok: false, title: "cloudflare-worker/index.js не найден", details: workerPath };
+
+  const rumokurohPath = rumoResult.filePath;
+  const qelujoPath   = qeluResult.filePath;
+  const rumoRaw = rumoResult.src;
+  const qeluRaw = qeluResult.src;
+
+  // Read OLD creds from any of the three — they must already be in sync.
+  const oldPassword = readCurrentPassword(rumoRaw, "java")
+    || readCurrentPassword(qeluRaw, "kotlin")
+    || readCurrentPassword(workerRaw, "worker");
+  const oldSaltFromKotlin = readCurrentSalt(qeluRaw, "kotlin");
+  const oldSaltFromJava = readCurrentSalt(rumoRaw, "java");
+  const oldSaltFromWorker = readCurrentSalt(workerRaw, "worker");
+  const oldSalt = oldSaltFromKotlin || oldSaltFromJava || oldSaltFromWorker;
+
+  if (!oldPassword || !oldSalt) {
     return {
       ok: false,
-      details:
-        `Шифрование не обновлено (${String(mode).toUpperCase()}). ` +
-        (updated.length ? `Проверено: ${updated.join("; ")}. ` : "") +
-        (warnings.length ? warnings.join("; ") : "Нет подходящих *_ENC / arrays"),
+      title: "Не удалось прочитать текущие PASSWORD/SALT",
+      details: `password=${oldPassword ? "ok" : "MISSING"}, salt=${oldSalt ? "ok" : "MISSING"}`,
     };
   }
 
+  // Decrypt current CF URL.
+  const oldLinkHex = readLinkHex(rumoRaw);
+  if (!oldLinkHex) return { ok: false, title: "LINK_HEX не найден в модуле", details: "" };
+  let plainUrl;
+  try {
+    plainUrl = decryptHex(oldLinkHex, oldPassword, oldSalt);
+  } catch (err) {
+    return { ok: false, title: "Не удалось расшифровать LINK_HEX старым ключом", details: String(err) };
+  }
+
+  // Generate new creds + re-encrypt URL.
+  const newPassword = randomPassword(28);
+  const newSalt = randomSalt(16);
+  const newLinkHex = encryptHex(plainUrl, newPassword, newSalt);
+
+  // Patch native modules and worker credentials.
+  const patchedRumo = patchJavaLinkHex(patchJavaPasswordAndSalt(rumoRaw, newPassword, newSalt), newLinkHex);
+  const patchedQelu = patchKotlinLinkHex(patchKotlinPasswordAndSalt(qeluRaw, newPassword, newSalt), newLinkHex);
+  let patchedWorker = patchWorkerPasswordAndSalt(workerRaw, newPassword, newSalt);
+
+  // Patch DEX loader module PASSWORD/SALT (if it exists and has DEX_PASSWORD/DEX_SALT consts).
+  let patchedDex = dexResult ? dexResult.src : null;
+  if (patchedDex) {
+    patchedDex = patchDexLoaderPasswordAndSalt(patchedDex, newPassword, newSalt);
+  }
+
+  // Re-encrypt the DEX payload in the worker under the new key.
+  const dexReenc = reencryptDexInWorker(patchedWorker, {
+    oldPassword, oldSalt,
+    newPassword, newSalt,
+  });
+  if (!dexReenc.ok) {
+    return { ok: false, title: "DEX re-encryption failed", details: dexReenc.details };
+  }
+  patchedWorker = dexReenc.patched;
+
+  const writes = [];
+  if (patchedRumo !== rumoRaw) { await fs.writeFile(rumokurohPath, patchedRumo); writes.push(path.relative(projectRoot, rumokurohPath)); }
+  if (patchedQelu !== qeluRaw) { await fs.writeFile(qelujoPath, patchedQelu); writes.push(path.relative(projectRoot, qelujoPath)); }
+  if (patchedDex && dexResult && patchedDex !== dexResult.src) { await fs.writeFile(dexResult.filePath, patchedDex); writes.push(path.relative(projectRoot, dexResult.filePath)); }
+  if (patchedWorker !== workerRaw) { await fs.writeFile(workerPath, patchedWorker); writes.push(path.relative(projectRoot, workerPath)); }
+
   return {
     ok: true,
+    title: `AES-GCM ключ ротирован`,
     details:
-      `${totalRotated} values / ${filesChanged} files via ${loaded.helperRoot}` +
-      (warnings.length ? `; warn: ${warnings.join("; ")}` : ""),
+      `password: ${oldPassword.slice(0, 4)}… → ${newPassword.slice(0, 4)}…\n` +
+      `salt:     ${oldSalt.toString("hex").slice(0, 8)}… → ${newSalt.toString("hex").slice(0, 8)}…\n` +
+      `LINK_HEX: ${oldLinkHex.slice(0, 12)}… → ${newLinkHex.slice(0, 12)}…\n` +
+      `files:    ${writes.join(", ")}`,
   };
 }
 
 module.exports = {
   rotateProjectEncryption,
-  loadProjectCrypto,
-  DEFAULT_HELPER_ROOT,
+  // kept for compatibility with older callers; load-crypto-from-helper no longer applies.
+  loadProjectCrypto: () => ({ ok: false, details: "legacy helper lookup — not used after AES-GCM migration" }),
+  DEFAULT_HELPER_ROOT: null,
 };
