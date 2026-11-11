@@ -116,29 +116,11 @@ function splitRuntimePrelude(code) {
   return { prelude: code.slice(0, index), body: code.slice(index) };
 }
 
-function sanitizeForObfuscator(code) {
-  // Strip shebangs that acorn can't handle at column 0 inside the bundle body
-  return code.replace(/^#![^\n]*/gm, "");
-}
-
 function obfuscateBundleCode(code, config) {
   const JavaScriptObfuscator = require("javascript-obfuscator");
   const { prelude, body } = splitRuntimePrelude(code);
-  const sanitized = sanitizeForObfuscator(body);
-  try {
-    const obfuscatedBody = JavaScriptObfuscator.obfuscate(sanitized, buildObfuscatorOptions(config)).getObfuscatedCode();
-    return prelude + obfuscatedBody;
-  } catch (err) {
-    if (err && err.message && err.message.includes("Unexpected token")) {
-      process.stderr.write(
-        "[rn-obfuscator] WARN: javascript-obfuscator could not parse the bundle " +
-          "(likely ES2022+ syntax such as private class fields). " +
-          "Skipping JS obfuscation. Error: " + err.message + "\n"
-      );
-      return code;
-    }
-    throw err;
-  }
+  const obfuscatedBody = JavaScriptObfuscator.obfuscate(body, buildObfuscatorOptions(config)).getObfuscatedCode();
+  return prelude + obfuscatedBody;
 }
 
 function withRnObfuscator(config) {
